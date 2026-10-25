@@ -164,6 +164,14 @@ public final class VaxoVpnService extends VpnService {
         } catch (android.system.ErrnoException e) {
             throw new IOException("socketpair: " + e.getMessage(), e);
         }
+        for (java.io.FileDescriptor bf : new java.io.FileDescriptor[]{pa, pb}) {
+            try {
+                android.system.Os.setsockoptInt(bf, android.system.OsConstants.SOL_SOCKET, android.system.OsConstants.SO_SNDBUF, 1 << 20);
+                android.system.Os.setsockoptInt(bf, android.system.OsConstants.SOL_SOCKET, android.system.OsConstants.SO_RCVBUF, 1 << 20);
+            } catch (Throwable t) {
+                android.util.Log.w("VaxoScope", "buf ayari olmadi: " + t);
+            }
+        }
         int tunFd = ParcelFileDescriptor.dup(pb).detachFd();
         try { android.system.Os.close(pb); } catch (Throwable ignored) { }
         tunFdOwned = tunFd;
