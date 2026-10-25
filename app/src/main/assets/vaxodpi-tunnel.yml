@@ -11,6 +11,5 @@ socks5:
   udp: 'udp'
 
 misc:
-  log-file: /data/data/xyz.valeh.vaxoscope/files/vaxodpi.log
   task-stack-size: 81920
-  log-level: debug
+  log-level: warn
