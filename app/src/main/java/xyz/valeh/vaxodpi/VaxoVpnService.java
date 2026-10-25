@@ -257,6 +257,23 @@ public final class VaxoVpnService extends VpnService {
         }
     }
 
+    private int dbgN;
+    private void dbgPkt(String d, byte[] b, int n) {
+        if (dbgN >= 200 || n < 20) return;
+        dbgN++;
+        int v = (b[0] >> 4) & 15;
+        if (v != 4) { flog(d + " v" + v + " len=" + n); return; }
+        int ihl = (b[0] & 15) * 4, pr = b[9] & 255;
+        String sa = (b[12]&255)+"."+(b[13]&255)+"."+(b[14]&255)+"."+(b[15]&255);
+        String da = (b[16]&255)+"."+(b[17]&255)+"."+(b[18]&255)+"."+(b[19]&255);
+        String x = "";
+        if ((pr == 6 || pr == 17) && n >= ihl + 4) {
+            x = " " + (((b[ihl]&255)<<8)|(b[ihl+1]&255)) + ">" + (((b[ihl+2]&255)<<8)|(b[ihl+3]&255));
+            if (pr == 6 && n >= ihl + 14) x += " fl=0x" + Integer.toHexString(b[ihl+13]&255);
+        }
+        flog(d + " p" + pr + " " + sa + ">" + da + x + " len=" + n);
+    }
+
     private void startPump(final java.io.FileDescriptor tun, final java.io.FileDescriptor a) {
         pumping = true;
         pktOut = 0;
@@ -281,12 +298,12 @@ public final class VaxoVpnService extends VpnService {
                         if (r <= 0) continue;
                         if ((f[0].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(tun, buf, 0, buf.length);
-                            if (n > 0) { pktOut++; android.system.Os.write(a, buf, 0, n); }
+                            if (n > 0) { pktOut++; dbgPkt("OUT", buf, n); android.system.Os.write(a, buf, 0, n); }
                         }
                         if ((f[1].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(a, buf, 0, buf.length);
                             if (n > 0) {
-                                try { android.system.Os.write(tun, buf, 0, n); pktIn++; }
+                                try { dbgPkt("IN", buf, n); android.system.Os.write(tun, buf, 0, n); pktIn++; }
                                 catch (android.system.ErrnoException we) {
                                     if (++wrErr % 200 == 1) flog("tun yazma: " + we.getMessage() + " n=" + n);
                                 }
