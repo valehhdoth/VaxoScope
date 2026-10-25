@@ -309,16 +309,16 @@ public final class VaxoVpnService extends VpnService {
                         f[1].revents = 0;
                         int r = android.system.Os.poll(f, 500);
                         long now = System.currentTimeMillis();
-                        if (now - lastSt > 5000) { lastSt = now; flog("durum out=" + pktOut + " in=" + pktIn + " kabul=" + VaxoProxy.dbgCnt); }
+                        if (now - lastSt > 5000) { lastSt = now; flog("durum out=" + pktOut + " in=" + pktIn + " " + PacketStats.summary()); }
                         if (r <= 0) continue;
                         if ((f[0].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(tun, buf, 0, buf.length);
-                            if (n > 0) { pktOut++; dbgPkt("OUT", buf, n); android.system.Os.write(a, buf, 0, n); }
+                            if (n > 0) { pktOut++; PacketStats.onPacket(true, buf, n); android.system.Os.write(a, buf, 0, n); }
                         }
                         if ((f[1].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(a, buf, 0, buf.length);
                             if (n > 0) {
-                                try { dbgPkt("IN", buf, n); android.system.Os.write(tun, buf, 0, n); pktIn++; }
+                                try { PacketStats.onPacket(false, buf, n); android.system.Os.write(tun, buf, 0, n); pktIn++; }
                                 catch (android.system.ErrnoException we) {
                                     if (++wrErr % 200 == 1) flog("tun yazma: " + we.getMessage() + " n=" + n);
                                 }
