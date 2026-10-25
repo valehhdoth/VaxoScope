@@ -264,6 +264,7 @@ public final class VaxoVpnService extends VpnService {
         Thread t = new Thread(new Runnable() {
             @Override public void run() {
                 byte[] buf = new byte[65536];
+                int wrErr = 0;
                 android.system.StructPollfd[] f = {new android.system.StructPollfd(),
                         new android.system.StructPollfd()};
                 f[0].fd = tun;
@@ -284,7 +285,12 @@ public final class VaxoVpnService extends VpnService {
                         }
                         if ((f[1].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(a, buf, 0, buf.length);
-                            if (n > 0) { pktIn++; android.system.Os.write(tun, buf, 0, n); }
+                            if (n > 0) {
+                                try { android.system.Os.write(tun, buf, 0, n); pktIn++; }
+                                catch (android.system.ErrnoException we) {
+                                    if (++wrErr % 200 == 1) flog("tun yazma: " + we.getMessage() + " n=" + n);
+                                }
+                            }
                         }
                         if (((f[0].revents | f[1].revents) & bad) != 0) break;
                     } catch (android.system.ErrnoException e) {
