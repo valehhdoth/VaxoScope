@@ -23,7 +23,7 @@ final class VaxoProxy {
     static int dbgCnt;
     static synchronized void dbgLog(String msg) {
         try {
-            if (dbgLog == null || dbgCnt >= 100) return;
+            if (dbgLog == null || dbgCnt >= 400) return;
             dbgCnt++;
             try (java.io.FileWriter w = new java.io.FileWriter(dbgLog, true)) {
                 w.write(new java.text.SimpleDateFormat("MM-dd HH:mm:ss",
@@ -135,6 +135,7 @@ final class VaxoProxy {
             } else { c.close(); return; }
             int port = in.readUnsignedShort();
 
+            dbgLog("istek cmd=" + cmd + " atyp=" + atyp + " " + (host != null ? host : "ip") + ":" + port);
             if (cmd == 3) { udp(c, in, out); return; }
             if (cmd != 1) { reply(out, 7); c.close(); return; }
 
@@ -148,11 +149,13 @@ final class VaxoProxy {
             r.setTcpNoDelay(true);
             try {
                 r.connect(new InetSocketAddress(target, port), 10000);
-            } catch (IOException e) { reply(out, 5); c.close(); r.close(); return; }
+            } catch (IOException e) { dbgLog("baglanamadi " + target.getHostAddress() + ":" + port + " " + e); reply(out, 5); c.close(); r.close(); return; }
             reply(out, 0);
+            dbgLog("baglandi " + target.getHostAddress() + ":" + port);
 
             byte[] first = new byte[16384];
             int n = in.read(first);
+            dbgLog("ilk veri n=" + n);
             if (n < 0) { c.close(); r.close(); return; }
             OutputStream ro = r.getOutputStream();
             if (port == 443 && n > 5 && (first[0] & 0xff) == 0x16) {
@@ -194,6 +197,7 @@ final class VaxoProxy {
             pool.execute(() -> pipe(rs, cs));
             pipe(cs, rs);
         } catch (Throwable e) {
+            dbgLog("handle hata " + e);
             try { c.close(); } catch (Throwable ignored) {}
             try { if (r != null) r.close(); } catch (Throwable ignored) {}
         }
