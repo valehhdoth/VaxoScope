@@ -158,39 +158,7 @@ final class VaxoProxy {
             dbgLog("ilk veri n=" + n);
             if (n < 0) { c.close(); r.close(); return; }
             OutputStream ro = r.getOutputStream();
-            if (port == 443 && n > 5 && (first[0] & 0xff) == 0x16) {
-                String key = target.getHostAddress();
-                if (BLOCKED.contains(key)) {
-                    desync(r, ro, first, n);
-                } else {
-                    ro.write(first, 0, n);
-                    ro.flush();
-                    byte[] resp = new byte[65536];
-                    int got = -1;
-                    r.setSoTimeout(2500);
-                    try {
-                        got = r.getInputStream().read(resp);
-                    } catch (IOException e) {
-                        got = -1;
-                    }
-                    if (got > 0) {
-                        r.setSoTimeout(0);
-                        out.write(resp, 0, got);
-                        out.flush();
-                    } else {
-                        BLOCKED.add(key);
-                        saveBlocked();
-                        try { r.close(); } catch (Throwable ignored) {}
-                        r = new Socket();
-                        r.setTcpNoDelay(true);
-                        r.connect(new InetSocketAddress(target, port), 10000);
-                        ro = r.getOutputStream();
-                        desync(r, ro, first, n);
-                    }
-                }
-            } else {
-                ro.write(first, 0, n);
-            }
+            ro.write(first, 0, n);
             ro.flush();
 
             final Socket rs = r, cs = c;
