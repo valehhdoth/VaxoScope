@@ -13,6 +13,7 @@ final class PacketStats {
 
     static final ConcurrentHashMap<String, Conn> TABLE = new ConcurrentHashMap<>();
     static volatile String lastName = "-";
+    static volatile long lastPkt;
 
     static String summary() {
         int named = 0;
@@ -109,6 +110,7 @@ final class PacketStats {
             if (out && (pr == 6 || pr == 17)) resolve(c);
         }
         c.last = now;
+        lastPkt = now;
         if (out) { c.pOut++; c.bOut += n; } else { c.pIn++; c.bIn += n; }
 
         if (!out || c.name != null) return;
