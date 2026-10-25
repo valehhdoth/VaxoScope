@@ -20,7 +20,7 @@ import java.util.concurrent.Executors;
 /** VaxoDPI'nin kendi SOCKS5 + DPI atlatma motoru. */
 final class VaxoProxy {
     public static volatile java.io.File dbgLog;
-    private static int dbgCnt;
+    static int dbgCnt;
     static synchronized void dbgLog(String msg) {
         try {
             if (dbgLog == null || dbgCnt >= 100) return;

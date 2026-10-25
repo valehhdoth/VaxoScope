@@ -102,6 +102,7 @@ public final class VaxoVpnService extends VpnService {
         // Önce yerel VaxoProxy SOCKS5 sunucusunu başlat.
         int strat = getSharedPreferences("vaxodpi", MODE_PRIVATE).getInt("strategy", 0);
         flog("Motor: VaxoProxy, strateji " + strat);
+        flog("build: durum-log");
         VaxoProxy.setStore(new java.io.File(getFilesDir(), "blocked.txt"));
         vaxo = new VaxoProxy();
         VaxoProxy.dbgLog = new java.io.File(getFilesDir(), "vaxodpi.log");
@@ -258,6 +259,7 @@ public final class VaxoVpnService extends VpnService {
         }
     }
 
+    private long lastSt;
     private int dbgN;
     private void dbgPkt(String d, byte[] b, int n) {
         if (n < 20) return;
@@ -298,6 +300,8 @@ public final class VaxoVpnService extends VpnService {
                         f[0].revents = 0;
                         f[1].revents = 0;
                         int r = android.system.Os.poll(f, 500);
+                        long now = System.currentTimeMillis();
+                        if (now - lastSt > 5000) { lastSt = now; flog("durum out=" + pktOut + " in=" + pktIn + " kabul=" + VaxoProxy.dbgCnt); }
                         if (r <= 0) continue;
                         if ((f[0].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(tun, buf, 0, buf.length);
