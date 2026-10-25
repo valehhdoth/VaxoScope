@@ -23,6 +23,7 @@ public class ConnectionsActivity extends Activity {
     private final HashMap<Integer, String> labels = new HashMap<>();
     private final Handler h = new Handler(Looper.getMainLooper());
     private TextView head;
+    private String crash = "";
     private BaseAdapter ad;
 
     private final Runnable tick = new Runnable() {
@@ -30,13 +31,13 @@ public class ConnectionsActivity extends Activity {
             List<PacketStats.Conn> l = new ArrayList<>(PacketStats.TABLE.values());
             Collections.sort(l, new Comparator<PacketStats.Conn>() {
                 @Override public int compare(PacketStats.Conn a, PacketStats.Conn b) {
-                    return Long.compare(b.last, a.last);
+                    return Long.compare(b.first, a.first);
                 }
             });
             if (l.size() > 300) l = l.subList(0, 300);
             rows.clear();
             rows.addAll(l);
-            head.setText("Bağlantı: " + PacketStats.TABLE.size() + "   " + PacketStats.summary());
+            head.setText(crash + "Bağlantı: " + PacketStats.TABLE.size() + "   " + PacketStats.summary());
             ad.notifyDataSetChanged();
             h.postDelayed(this, 1000);
         }
@@ -67,6 +68,29 @@ public class ConnectionsActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        try {
+            java.io.File cf = new java.io.File(getFilesDir(), "crash.txt");
+            if (cf.exists()) {
+                byte[] bb = new byte[(int) Math.min(cf.length(), 700)];
+                java.io.FileInputStream in = new java.io.FileInputStream(cf);
+                int n = in.read(bb);
+                in.close();
+                crash = "ÖNCEKİ ÇÖKME:\n" + new String(bb, 0, Math.max(n, 0)) + "\n\n";
+                cf.delete();
+            }
+        } catch (Throwable ignored) { }
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override public void uncaughtException(Thread th, Throwable e) {
+                try {
+                    java.io.StringWriter sw = new java.io.StringWriter();
+                    e.printStackTrace(new java.io.PrintWriter(sw));
+                    java.io.FileWriter w = new java.io.FileWriter(new java.io.File(getFilesDir(), "crash.txt"));
+                    w.write(sw.toString());
+                    w.close();
+                } catch (Throwable ignored) { }
+                android.os.Process.killProcess(android.os.Process.myPid());
+            }
+        });
         float d = getResources().getDisplayMetrics().density;
         int pad = (int) (12 * d);
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
