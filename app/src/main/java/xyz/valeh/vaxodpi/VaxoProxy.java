@@ -19,6 +19,20 @@ import java.util.concurrent.Executors;
 
 /** VaxoDPI'nin kendi SOCKS5 + DPI atlatma motoru. */
 final class VaxoProxy {
+    public static volatile java.io.File dbgLog;
+    private static int dbgCnt;
+    static synchronized void dbgLog(String msg) {
+        try {
+            if (dbgLog == null || dbgCnt >= 100) return;
+            dbgCnt++;
+            try (java.io.FileWriter w = new java.io.FileWriter(dbgLog, true)) {
+                w.write(new java.text.SimpleDateFormat("MM-dd HH:mm:ss",
+                        java.util.Locale.US).format(new java.util.Date())
+                        + " " + msg + "\n");
+            }
+        } catch (Throwable ignored) { }
+    }
+
     private ServerSocket server;
     private ExecutorService pool;
     private volatile boolean running;
@@ -71,6 +85,7 @@ final class VaxoProxy {
             while (running) {
                 try {
                     final Socket c = server.accept();
+                    dbgLog("proxy kabul " + c.getRemoteSocketAddress());
                     pool.execute(() -> handle(c));
                 } catch (IOException e) {
                     if (!running || server.isClosed()) return;
