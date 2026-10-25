@@ -106,6 +106,7 @@ public final class VaxoVpnService extends VpnService {
         VaxoProxy.setStore(new java.io.File(getFilesDir(), "blocked.txt"));
         vaxo = new VaxoProxy();
         VaxoProxy.dbgLog = new java.io.File(getFilesDir(), "vaxodpi.log");
+        PacketStats.init(this);
         vaxo.start(1080, strat);
         running = true;
 

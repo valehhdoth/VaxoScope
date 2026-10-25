@@ -8,6 +8,7 @@ final class PacketStats {
         String laddr, raddr;
         long pOut, bOut, pIn, bIn, first, last;
         volatile String name;
+        volatile int uid = -2;
     }
 
     static final ConcurrentHashMap<String, Conn> TABLE = new ConcurrentHashMap<>();
@@ -17,6 +18,30 @@ final class PacketStats {
         int named = 0;
         for (Conn c : TABLE.values()) if (c.name != null) named++;
         return "bag=" + TABLE.size() + " ad=" + named + " son=" + lastName;
+    }
+
+    private static volatile android.net.ConnectivityManager cm;
+    private static final java.util.concurrent.ExecutorService EX =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    static void init(android.content.Context x) {
+        cm = (android.net.ConnectivityManager) x.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+    }
+
+    private static void resolve(final Conn c) {
+        EX.execute(new Runnable() {
+            @Override public void run() {
+                int u = -1;
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= 29 && cm != null) {
+                        u = cm.getConnectionOwnerUid(c.proto,
+                                new java.net.InetSocketAddress(java.net.InetAddress.getByName(c.laddr), c.lport),
+                                new java.net.InetSocketAddress(java.net.InetAddress.getByName(c.raddr), c.rport));
+                    }
+                } catch (Throwable ignored) { }
+                c.uid = u;
+            }
+        });
     }
 
     private static int u16(byte[] b, int i) {
@@ -81,6 +106,7 @@ final class PacketStats {
             c.rport = out ? dp : sp;
             c.first = now;
             TABLE.put(key, c);
+            if (out && (pr == 6 || pr == 17)) resolve(c);
         }
         c.last = now;
         if (out) { c.pOut++; c.bOut += n; } else { c.pIn++; c.bIn += n; }
