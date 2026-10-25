@@ -1,0 +1,17 @@
+*.apk
+*.idsig
+*.keystore
+local.properties
+build/
+app/build/
+.gradle/
+
+app/classes/
+app/dex/
+*.class
+
+*.jks
+*.keystore
+*.b64
+*.bak
+apk.dex
