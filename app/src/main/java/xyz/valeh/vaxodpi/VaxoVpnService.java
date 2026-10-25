@@ -41,6 +41,10 @@ public final class VaxoVpnService extends VpnService {
 
     private volatile boolean running;
     private VaxoProxy vaxo;
+    private java.io.FileDescriptor pumpA;
+    private volatile boolean pumping;
+    private Thread pumpThread;
+    private volatile long pktOut, pktIn;
     private android.net.ConnectivityManager.NetworkCallback netCb;
     private boolean tunnelStarted;
     private int tunFdOwned = -1;
@@ -152,9 +156,19 @@ public final class VaxoVpnService extends VpnService {
         }
 
         // Dosya tanımlayıcısının sahipliğini native tünel motoruna aktar.
-        int tunFd = vpnInterface.detachFd();
+        java.io.FileDescriptor pa = new java.io.FileDescriptor();
+        java.io.FileDescriptor pb = new java.io.FileDescriptor();
+        try {
+            android.system.Os.socketpair(android.system.OsConstants.AF_UNIX,
+                    android.system.OsConstants.SOCK_DGRAM, 0, pa, pb);
+        } catch (android.system.ErrnoException e) {
+            throw new IOException("socketpair: " + e.getMessage(), e);
+        }
+        int tunFd = ParcelFileDescriptor.dup(pb).detachFd();
+        try { android.system.Os.close(pb); } catch (Throwable ignored) { }
         tunFdOwned = tunFd;
-        vpnInterface = null;
+        pumpA = pa;
+        startPump(vpnInterface.getFileDescriptor(), pa);
 
         try {
             TProxyService.TProxyStartService(
@@ -235,6 +249,51 @@ public final class VaxoVpnService extends VpnService {
         }
     }
 
+    private void startPump(final java.io.FileDescriptor tun, final java.io.FileDescriptor a) {
+        pumping = true;
+        pktOut = 0;
+        pktIn = 0;
+        Thread t = new Thread(new Runnable() {
+            @Override public void run() {
+                byte[] buf = new byte[65536];
+                android.system.StructPollfd[] f = {new android.system.StructPollfd(),
+                        new android.system.StructPollfd()};
+                f[0].fd = tun;
+                f[0].events = (short) android.system.OsConstants.POLLIN;
+                f[1].fd = a;
+                f[1].events = (short) android.system.OsConstants.POLLIN;
+                int bad = android.system.OsConstants.POLLERR | android.system.OsConstants.POLLHUP
+                        | android.system.OsConstants.POLLNVAL;
+                while (pumping) {
+                    try {
+                        f[0].revents = 0;
+                        f[1].revents = 0;
+                        int r = android.system.Os.poll(f, 500);
+                        if (r <= 0) continue;
+                        if ((f[0].revents & android.system.OsConstants.POLLIN) != 0) {
+                            int n = android.system.Os.read(tun, buf, 0, buf.length);
+                            if (n > 0) { pktOut++; android.system.Os.write(a, buf, 0, n); }
+                        }
+                        if ((f[1].revents & android.system.OsConstants.POLLIN) != 0) {
+                            int n = android.system.Os.read(a, buf, 0, buf.length);
+                            if (n > 0) { pktIn++; android.system.Os.write(tun, buf, 0, n); }
+                        }
+                        if (((f[0].revents | f[1].revents) & bad) != 0) break;
+                    } catch (android.system.ErrnoException e) {
+                        if (e.errno == android.system.OsConstants.EAGAIN
+                                || e.errno == android.system.OsConstants.EINTR) continue;
+                        flog("Pompa hatasi: " + e.getMessage());
+                        break;
+                    } catch (Throwable e) {
+                        break;
+                    }
+                }
+            }
+        }, "VaxoScope-Pump");
+        pumpThread = t;
+        t.start();
+    }
+
     private void startNetWatch() {
         if (android.os.Build.VERSION.SDK_INT < 24) return;
         try {
@@ -286,7 +345,8 @@ public final class VaxoVpnService extends VpnService {
                             : String.format(java.util.Locale.US, "%.2f GB", mb / 1024.0);
                     String text = String.format(java.util.Locale.US,
                             "%02d:%02d:%02d  ↓ %.2f  ↑ %.2f Mbps  %s",
-                            s / 3600, (s / 60) % 60, s % 60, dl, ul, data);
+                            s / 3600, (s / 60) % 60, s % 60, dl, ul, data)
+                            + "  tap " + pktOut + "/" + pktIn;
                     if (!running) return;
                     ((android.app.NotificationManager)
                             getSystemService(NOTIFICATION_SERVICE))
@@ -331,6 +391,17 @@ public final class VaxoVpnService extends VpnService {
             netCb = null;
         }
 
+        pumping = false;
+        Thread pt = pumpThread;
+        pumpThread = null;
+        if (pt != null) {
+            try { pt.join(800); } catch (InterruptedException ignored) { }
+        }
+        if (pumpA != null) {
+            try { android.system.Os.close(pumpA); } catch (Throwable ignored) { }
+            pumpA = null;
+        }
+
         Thread nthr = notifThread;
         notifThread = null;
         if (nthr != null) nthr.interrupt();
@@ -363,7 +434,7 @@ public final class VaxoVpnService extends VpnService {
             try {
                 String t = android.system.Os.readlink("/proc/self/fd/" + f);
                 flog("TUN fd " + f + " hala acik -> " + t);
-                if (t.contains("tun")) {
+                if (t.contains("tun") || t.startsWith("socket:")) {
                     ParcelFileDescriptor.adoptFd(f).close();
                     flog("TUN fd kapatildi");
                 }
