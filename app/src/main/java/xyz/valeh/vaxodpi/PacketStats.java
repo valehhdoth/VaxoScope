@@ -17,6 +17,8 @@ final class PacketStats {
         volatile String name;
         volatile int uid = -2;
         volatile String guess;
+        long sUp, sDown;
+        boolean sCnt;
         final ArrayDeque<Pkt> pkts = new ArrayDeque<>();
         List<Pkt> snapshot() { synchronized (pkts) { return new ArrayList<>(pkts); } }
     }
@@ -180,9 +182,174 @@ final class PacketStats {
         return cnt;
     }
 
+    // ---------- kullanim gecmisi, canli bildirim metni, pcapng ----------
+    private static android.content.Context appCtx;
+    private static long ltT, ltI, ltO;
+    private static String ltS = "";
+
+    private static String spd(double kb) {
+        return kb < 1024 ? String.format(Locale.US, "%.0f KB/s", kb) : String.format(Locale.US, "%.1f MB/s", kb / 1024);
+    }
+
+    private static String sizeStr(long b) {
+        return b < 1048576 ? (b / 1024) + " KB" : b < 1073741824L
+                ? String.format(Locale.US, "%.1f MB", b / 1048576.0) : String.format(Locale.US, "%.2f GB", b / 1073741824.0);
+    }
+
+    static synchronized String liveText(String fb) {
+        long now = System.currentTimeMillis();
+        if (ltT == 0) { ltT = now; ltI = totIn; ltO = totOut; return fb; }
+        if (now - ltT >= 1500) {
+            double dt = (now - ltT) / 1000.0;
+            double dn = (totIn - ltI) / 1024.0 / dt, up = (totOut - ltO) / 1024.0 / dt;
+            ltT = now; ltI = totIn; ltO = totOut;
+            ltS = "↓ " + spd(dn) + "   ↑ " + spd(up) + "   ·   " + sizeStr(totIn + totOut);
+        }
+        return ltS.length() == 0 ? fb : ltS;
+    }
+
+    static String pkgOf(int uid) {
+        if (uid < 0) return "?";
+        try {
+            String[] p = appCtx.getPackageManager().getPackagesForUid(uid);
+            if (p != null && p.length > 0) return p[0];
+        } catch (Throwable ignored) { }
+        return "uid:" + uid;
+    }
+
+    static synchronized void saveUsage() {
+        try {
+            if (appCtx == null) return;
+            long now = System.currentTimeMillis();
+            String day = new java.text.SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
+            HashMap<String, long[]> add = new HashMap<>();
+            for (Conn c : TABLE.values()) {
+                if (c.uid == -2 && now - c.first < 5000) continue;
+                long du = c.bOut - c.sUp, dd = c.bIn - c.sDown;
+                boolean nw = !c.sCnt;
+                if (du == 0 && dd == 0 && !nw) continue;
+                String pk = pkgOf(c.uid);
+                long[] a = add.get(pk);
+                if (a == null) { a = new long[3]; add.put(pk, a); }
+                a[0] += du; a[1] += dd; if (nw) a[2]++;
+                c.sUp = c.bOut; c.sDown = c.bIn; c.sCnt = true;
+            }
+            if (add.isEmpty()) return;
+            android.content.SharedPreferences u = appCtx.getSharedPreferences("vaxo_usage", 0);
+            android.content.SharedPreferences.Editor e = u.edit();
+            for (Map.Entry<String, long[]> en : add.entrySet()) {
+                String k = day + "|" + en.getKey();
+                String[] p = u.getString(k, "0,0,0").split(",");
+                long[] v = en.getValue();
+                e.putString(k, (Long.parseLong(p[0]) + v[0]) + "," + (Long.parseLong(p[1]) + v[1]) + "," + (Long.parseLong(p[2]) + v[2]));
+            }
+            Calendar cal = Calendar.getInstance();
+            cal.add(Calendar.DAY_OF_YEAR, -30);
+            String cut = new java.text.SimpleDateFormat("yyyyMMdd", Locale.US).format(cal.getTime());
+            for (String k : u.getAll().keySet()) if (k.length() > 8 && k.substring(0, 8).compareTo(cut) < 0) e.remove(k);
+            e.apply();
+        } catch (Throwable ignored) { }
+    }
+
+    private static int linkSkip(int link) {
+        switch (link) {
+            case 1: return 14;
+            case 0: return 4;
+            case 113: return 16;
+            case 276: return 20;
+            case 101: case 12: case 14: return 0;
+            default: return -1;
+        }
+    }
+
+    private static int rd16(byte[] b, int i, boolean le) {
+        return le ? ((b[i] & 255) | ((b[i + 1] & 255) << 8)) : (((b[i] & 255) << 8) | (b[i + 1] & 255));
+    }
+
+    private static boolean feed(int link, int skip, byte[] d, int incl, int orig, long t) {
+        int off = skip;
+        if (link == 1 && incl >= 14) {
+            int et = ((d[12] & 255) << 8) | (d[13] & 255);
+            if (et == 0x8100 && incl >= 18) { off = 18; et = ((d[16] & 255) << 8) | (d[17] & 255); }
+            if (et != 0x0800 && et != 0x86dd) return false;
+        }
+        int len = incl - off;
+        if (len < 20) return false;
+        byte[] ip = off == 0 ? d : Arrays.copyOfRange(d, off, incl);
+        parse(IMPORT, guessOut(ip, len), ip, len, Math.max(len, orig - off), t, false);
+        return true;
+    }
+
+    private static int importNg(DataInputStream in, byte[] gh) throws IOException {
+        boolean le = (gh[8] & 255) == 0x4D;
+        long shb = rd32(gh, 4, le);
+        if (shb < 24 || shb > (1 << 20)) return -1;
+        in.readFully(new byte[(int) shb - 24]);
+        IMPORT.clear();
+        ArrayList<double[]> ifs = new ArrayList<>();
+        byte[] hd = new byte[8], tail = new byte[4];
+        int cnt = 0;
+        try {
+            while (true) {
+                in.readFully(hd);
+                long type, len;
+                byte[] body;
+                if ((hd[0] & 255) == 0x0a && (hd[1] & 255) == 0x0d && (hd[2] & 255) == 0x0d && (hd[3] & 255) == 0x0a) {
+                    byte[] bm = new byte[4];
+                    in.readFully(bm);
+                    le = (bm[0] & 255) == 0x4D;
+                    len = rd32(hd, 4, le);
+                    if (len < 16 || len > (1 << 20)) break;
+                    in.readFully(new byte[(int) len - 16]);
+                    in.readFully(tail);
+                    ifs.clear();
+                    continue;
+                }
+                type = rd32(hd, 0, le);
+                len = rd32(hd, 4, le);
+                if (len < 12 || len > 16L * 1024 * 1024) break;
+                int bl = (int) len - 12;
+                body = new byte[bl];
+                in.readFully(body);
+                in.readFully(tail);
+                if (type == 1 && bl >= 8) {
+                    double res = 1e6;
+                    int o = 8;
+                    while (o + 4 <= bl) {
+                        int code = rd16(body, o, le), ol = rd16(body, o + 2, le);
+                        o += 4;
+                        if (code == 0) break;
+                        if (code == 9 && ol >= 1 && o < bl) {
+                            int v = body[o] & 255;
+                            res = (v & 0x80) == 0 ? Math.pow(10, v) : Math.pow(2, v & 0x7f);
+                        }
+                        o += (ol + 3) & ~3;
+                    }
+                    ifs.add(new double[]{rd16(body, 0, le), res});
+                } else if (type == 6 && bl >= 20) {
+                    int ifid = (int) rd32(body, 0, le);
+                    long ts = (rd32(body, 4, le) << 32) | rd32(body, 8, le);
+                    int cap = (int) rd32(body, 12, le), orig = (int) rd32(body, 16, le);
+                    if (ifid >= ifs.size() || cap < 0 || 20 + cap > bl) continue;
+                    int link = (int) ifs.get(ifid)[0], skip = linkSkip(link);
+                    if (skip < 0) continue;
+                    long t = (long) (ts / ifs.get(ifid)[1] * 1000.0);
+                    try { if (feed(link, skip, Arrays.copyOfRange(body, 20, 20 + cap), cap, orig, t)) cnt++; } catch (Throwable ignored) { }
+                } else if (type == 3 && bl >= 4 && !ifs.isEmpty()) {
+                    int orig = (int) rd32(body, 0, le), cap = Math.min(orig, bl - 4);
+                    int link = (int) ifs.get(0)[0], skip = linkSkip(link);
+                    if (skip < 0 || cap < 0) continue;
+                    try { if (feed(link, skip, Arrays.copyOfRange(body, 4, 4 + cap), cap, orig, System.currentTimeMillis())) cnt++; } catch (Throwable ignored) { }
+                }
+            }
+        } catch (EOFException ignored) { }
+        return cnt;
+    }
+
     static void init(android.content.Context x) {
         cm = (android.net.ConnectivityManager) x.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
         dir = x.getFilesDir();
+        appCtx = x.getApplicationContext();
         pcapOn = x.getSharedPreferences("vaxodpi", 0).getBoolean("cap_on", true);
     }
 
@@ -290,7 +457,7 @@ final class PacketStats {
         else if (m == 0xd4c3b2a1L) le = true;
         else if (m == 0xa1b23c4dL) { le = false; nano = true; }
         else if (m == 0x4d3cb2a1L) { le = true; nano = true; }
-        else if (m == 0x0a0d0d0aL) return -3;
+        else if (m == 0x0a0d0d0aL) return importNg(in, gh);
         else return -1;
         int link = (int) rd32(gh, 20, le), skip;
         switch (link) {

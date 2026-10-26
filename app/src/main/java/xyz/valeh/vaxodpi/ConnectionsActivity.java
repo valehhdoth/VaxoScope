@@ -22,7 +22,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class ConnectionsActivity extends Activity {
-    static final int LIST = 0, APP = 1, CONN = 2, PKTS = 3, PKT = 4, ALL = -99, DNSL = 5;
+    static final int LIST = 0, APP = 1, CONN = 2, PKTS = 3, PKT = 4, ALL = -99, DNSL = 5, FLOW = 6, REP = 7;
     static final int CARD = 0xFF0C0C0C, LINE = 0xFF222222, DIM = 0xFF8A8A8A, OFF = 0xFF5E5E5E;
     static final String[] FN = {"Tümü", "TCP", "UDP", "DNS", "TLS"};
     static final SimpleDateFormat TF = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -75,6 +75,7 @@ public class ConnectionsActivity extends Activity {
     final List<PacketStats.Conn> conns = new ArrayList<>();
     final List<PacketStats.Pkt> pkts = new ArrayList<>();
     final List<PacketStats.Dns> dnsRows = new ArrayList<>();
+    final List<Object[]> repRows = new ArrayList<>();
     Set<String> pendKeys;
     float d, gDown, gUp;
     long pendingUntil, maxBytes = 1, lastT, lastIn, lastOut;
@@ -397,6 +398,7 @@ public class ConnectionsActivity extends Activity {
         put(srcRow, chip("Canlı", !imp, 9, v -> { imp = false; buildFilters(); go(LIST); }));
         put(srcRow, chip("Dosya", imp, 9, v -> { imp = true; selUid = ALL; buildFilters(); go(APP); }));
         put(srcRow, chip("DNS", false, 9, v -> go(DNSL)));
+        put(srcRow, chip("Rapor", false, 9, v -> go(REP)));
         if (lvl == APP && !imp && selUid != ALL) put(srcRow, chip("PCAP", false, 9, v -> exportApp()));
         for (int i = 0; i < FN.length; i++) {
             final int k = i;
@@ -410,6 +412,7 @@ public class ConnectionsActivity extends Activity {
         if (lvl == CONN) {
             int n = selConn.snapshot().size();
             put(detActions, chip("Paketleri gör (son " + n + ")", true, 13, v -> go(PKTS)));
+            if (selConn.proto == 6) put(detActions, chip("Konuşma", false, 13, v -> go(FLOW)));
             if (!imp) put(detActions, chip("PCAP aktar", false, 13, v -> exportKeys(PacketStats.keysOf(Collections.singletonList(selConn)), "baglanti")));
         } else if (lvl == PKT) {
             put(detActions, chip("Ayrıntı", pktMode == 0, 13, v -> { pktMode = 0; buildDetActions(); refresh(); }));
@@ -538,6 +541,106 @@ public class ConnectionsActivity extends Activity {
         }
     }
 
+    static long u32(byte[] b, int i) {
+        return ((b[i] & 255L) << 24) | ((b[i + 1] & 255L) << 16) | ((b[i + 2] & 255L) << 8) | (b[i + 3] & 255L);
+    }
+
+    String flowText(PacketStats.Conn c) {
+        List<PacketStats.Pkt> l = c.snapshot();
+        StringBuilder s = new StringBuilder();
+        s.append(c.laddr).append(":").append(c.lport).append("  ⇄  ").append(c.raddr).append(":").append(c.rport)
+         .append("\nSon ").append(l.size()).append(" paket · seq/ack göreli\n→ giden   ← gelen\n\n");
+        if (l.isEmpty()) return s.append("Tutulan paket yok.").toString();
+        long t0 = l.get(0).t;
+        long[] base = {-1, -1};
+        String[] fn = {"FIN", "SYN", "RST", "PSH", "ACK", "URG"};
+        for (PacketStats.Pkt p : l) {
+            byte[] b = p.data;
+            try {
+                int v = (b[0] >> 4) & 15, ip, pr;
+                if (v == 4) { ip = (b[0] & 15) * 4; pr = b[9] & 255; }
+                else if (v == 6) { ip = 40; pr = b[6] & 255; }
+                else continue;
+                s.append(String.format(Locale.US, "%+7.3f ", (p.t - t0) / 1000.0)).append(p.out ? "→ " : "← ");
+                if (pr == 6 && b.length >= ip + 20) {
+                    int off = ((b[ip + 12] >> 4) & 15) * 4, fl = b[ip + 13] & 255;
+                    long seq = u32(b, ip + 4), ack = u32(b, ip + 8);
+                    int di = p.out ? 0 : 1;
+                    if (base[di] < 0) base[di] = seq;
+                    long rs = (seq - base[di]) & 0xFFFFFFFFL;
+                    long ra = base[1 - di] >= 0 ? ((ack - base[1 - di]) & 0xFFFFFFFFL) : ack;
+                    StringBuilder fs = new StringBuilder();
+                    for (int i = 0; i < 6; i++) if ((fl & (1 << i)) != 0) { if (fs.length() > 0) fs.append(','); fs.append(fn[i]); }
+                    int pay = Math.max(0, p.orig - ip - off);
+                    s.append(fs.length() > 0 ? fs : "-").append("  seq=").append(rs);
+                    if ((fl & 0x10) != 0) s.append(" ack=").append(ra);
+                    s.append("  len=").append(pay).append('\n');
+                    String br = PacketStats.decode(p)[0];
+                    int k = br.indexOf(" B ");
+                    if (k >= 0 && k + 3 < br.length()) s.append("         ").append(br.substring(k + 3)).append('\n');
+                } else {
+                    s.append(PacketStats.decode(p)[0]).append('\n');
+                }
+            } catch (Throwable ignored) { }
+        }
+        return s.toString();
+    }
+
+    String pkgLabel(String pk) {
+        if (pk.equals("?")) return "Bilinmeyen";
+        if (pk.startsWith("uid:")) {
+            try { return label(Integer.parseInt(pk.substring(4))); } catch (Throwable e) { return pk; }
+        }
+        try {
+            PackageManager pm = getPackageManager();
+            return pm.getApplicationLabel(pm.getApplicationInfo(pk, 0)).toString();
+        } catch (Throwable e) { return pk; }
+    }
+
+    Drawable pkgIcon(String pk) {
+        try { return getPackageManager().getApplicationIcon(pk); }
+        catch (Throwable e) { return getPackageManager().getDefaultActivityIcon(); }
+    }
+
+    String dayLabel(String day) {
+        SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd", Locale.US);
+        String t = f.format(new Date());
+        Calendar c = Calendar.getInstance();
+        c.add(Calendar.DAY_OF_YEAR, -1);
+        String y = f.format(c.getTime());
+        if (day.equals(t)) return "Bugün";
+        if (day.equals(y)) return "Dün";
+        return day.substring(6) + "." + day.substring(4, 6) + "." + day.substring(0, 4);
+    }
+
+    void buildReport() {
+        PacketStats.saveUsage();
+        repRows.clear();
+        TreeMap<String, List<Object[]>> days = new TreeMap<>(Collections.reverseOrder());
+        for (Map.Entry<String, ?> e : getSharedPreferences("vaxo_usage", 0).getAll().entrySet()) {
+            try {
+                String[] k = e.getKey().split("\\|", 2);
+                String[] v = String.valueOf(e.getValue()).split(",");
+                List<Object[]> l = days.get(k[0]);
+                if (l == null) { l = new ArrayList<>(); days.put(k[0], l); }
+                l.add(new Object[]{k[1], Long.parseLong(v[0]), Long.parseLong(v[1]), Long.parseLong(v[2])});
+            } catch (Throwable ignored) { }
+        }
+        int n = 0;
+        for (Map.Entry<String, List<Object[]>> e : days.entrySet()) {
+            if (n++ >= 7) break;
+            List<Object[]> l = e.getValue();
+            Collections.sort(l, (a, b) -> Long.compare((Long) b[1] + (Long) b[2], (Long) a[1] + (Long) a[2]));
+            long up = 0, dn = 0, cn = 0;
+            for (Object[] o : l) { up += (Long) o[1]; dn += (Long) o[2]; cn += (Long) o[3]; }
+            repRows.add(new Object[]{"H", "▸ " + dayLabel(e.getKey()), up, dn, cn});
+            for (int i = 0; i < l.size() && i < 5; i++) {
+                Object[] o = l.get(i);
+                repRows.add(new Object[]{"A", o[0], o[1], o[2], o[3]});
+            }
+        }
+    }
+
     void buildSettings() {
         setBox.removeAllViews();
         setBox.addView(toggle("PCAP kaydı", "Ham paketler capture.pcap dosyasına yazılır (en çok 64 MB).\n" + PacketStats.pcapInfo(),
@@ -625,8 +728,8 @@ public class ConnectionsActivity extends Activity {
         }
         if (now - lastT > 400) { lastT = now; lastIn = PacketStats.totIn; lastOut = PacketStats.totOut; }
 
-        boolean listy = tab == 0 && (lvl == LIST || lvl == APP || lvl == PKTS || lvl == DNSL);
-        boolean det = tab == 0 && (lvl == CONN || lvl == PKT);
+        boolean listy = tab == 0 && (lvl == LIST || lvl == APP || lvl == PKTS || lvl == DNSL || lvl == REP);
+        boolean det = tab == 0 && (lvl == CONN || lvl == PKT || lvl == FLOW);
         listPage.setVisibility(listy ? View.VISIBLE : View.GONE);
         detSv.setVisibility(det ? View.VISIBLE : View.GONE);
         setSv.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
@@ -662,6 +765,13 @@ public class ConnectionsActivity extends Activity {
         if (lvl == LIST && !apps.isEmpty()) { long[] a = (long[]) apps.get(0)[1]; maxBytes = Math.max(1, a[1] + a[2]); }
         for (PacketStats.Conn c : conns) maxBytes = Math.max(maxBytes, c.bOut + c.bIn);
 
+        if (lvl == REP) {
+            buildReport();
+            sub.setText("‹  Kullanım raporu · son günler");
+            empty.setText("Henüz kayıtlı kullanım yok.\nVPN açıkken trafik oluştur.");
+            ad.notifyDataSetChanged();
+            return;
+        }
         if (lvl == DNSL) {
             dnsRows.clear();
             List<PacketStats.Dns> dl = PacketStats.dnsSnapshot();
@@ -686,6 +796,10 @@ public class ConnectionsActivity extends Activity {
             sub.setText(back + dest(selConn));
             detail.setTextSize(13);
             detail.setText(detailText(selConn));
+        } else if (selConn != null && lvl == FLOW) {
+            sub.setText(back + "Konuşma · " + dest(selConn));
+            detail.setTextSize(11);
+            detail.setText(flowText(selConn));
         } else if (selConn != null && lvl == PKTS) {
             pkts.clear();
             pkts.addAll(selConn.snapshot());
@@ -808,7 +922,7 @@ public class ConnectionsActivity extends Activity {
         lv.setSelector(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         lv.setVerticalScrollBarEnabled(false);
         ad = new BaseAdapter() {
-            @Override public int getCount() { return lvl == LIST ? apps.size() : lvl == APP ? conns.size() : lvl == PKTS ? pkts.size() : lvl == DNSL ? dnsRows.size() : 0; }
+            @Override public int getCount() { return lvl == LIST ? apps.size() : lvl == APP ? conns.size() : lvl == PKTS ? pkts.size() : lvl == DNSL ? dnsRows.size() : lvl == REP ? repRows.size() : 0; }
             @Override public Object getItem(int i) { return null; }
             @Override public long getItemId(int i) { return i; }
             @Override public View getView(int i, View v, ViewGroup p) {
@@ -818,6 +932,14 @@ public class ConnectionsActivity extends Activity {
                     String ty = e.qtype == 1 ? "A" : e.qtype == 28 ? "AAAA" : e.qtype == 65 ? "HTTPS" : e.qtype == 5 ? "CNAME" : "tür " + e.qtype;
                     String rt = e.rcode < 0 ? "…" : e.rcode == 0 ? (e.ans.length() == 0 ? "boş" : "✓") : "hata " + e.rcode;
                     return row(null, e.name, TF.format(new Date(e.t)) + " · " + ap + " · " + ty + (e.ans.length() > 0 ? " → " + e.ans : ""), rt, -1f);
+                }
+                if (lvl == REP) {
+                    Object[] o = repRows.get(i);
+                    String det = o[4] + " bağlantı · ↑" + fmt((Long) o[2]) + " ↓" + fmt((Long) o[3]);
+                    String tot = fmt((Long) o[2] + (Long) o[3]);
+                    if (o[0].equals("H")) return row(null, "" + o[1], det, tot, -1f);
+                    String pk = "" + o[1];
+                    return row(pkgIcon(pk), pkgLabel(pk), det, tot, -1f);
                 }
                 if (lvl == LIST) {
                     Object[] o = apps.get(i);
@@ -919,7 +1041,8 @@ public class ConnectionsActivity extends Activity {
 
     @Override public void onBackPressed() {
         if (tab == 1) { tab = 0; refresh(); }
-        else if (lvl == DNSL) go(minLvl());
+        else if (lvl == DNSL || lvl == REP) go(minLvl());
+        else if (lvl == FLOW) go(CONN);
         else if (lvl > minLvl()) go(lvl - 1);
         else super.onBackPressed();
     }

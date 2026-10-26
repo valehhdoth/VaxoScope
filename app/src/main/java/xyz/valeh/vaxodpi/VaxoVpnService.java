@@ -114,7 +114,7 @@ public final class VaxoVpnService extends VpnService {
         Thread.sleep(250);
 
         Builder builder = new Builder();
-        builder.setSession("VaxoDPI");
+        builder.setSession("VaxoScope");
         builder.setMtu(1500);
 
         // Hev'in yapılandırmasındaki 198.18.0.1 adresiyle
@@ -243,7 +243,7 @@ public final class VaxoVpnService extends VpnService {
                 : new android.app.Notification.Builder(this);
         int icon = getResources().getIdentifier("ic_stat", "drawable", getPackageName());
         b.setSmallIcon(icon != 0 ? icon : android.R.drawable.ic_lock_lock)
-         .setContentTitle("VaxoDPI - " + nt("aktif", "active", "активен"))
+         .setContentTitle("VaxoScope - " + nt("aktif", "active", "активен"))
          .setContentText(text)
          .setContentIntent(openPi)
          .setOngoing(true)
@@ -268,7 +268,8 @@ public final class VaxoVpnService extends VpnService {
         }
     }
 
-    private long lastSt;
+    private long lastSt, lastNt;
+    private int ntN;
 
     private void startPump(final java.io.FileDescriptor tun, final java.io.FileDescriptor a) {
         pumping = true;
@@ -292,6 +293,14 @@ public final class VaxoVpnService extends VpnService {
                         f[1].revents = 0;
                         int r = android.system.Os.poll(f, 500);
                         long now = System.currentTimeMillis();
+                        if (now - lastNt > 2000) {
+                            lastNt = now;
+                            try {
+                                ((android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE))
+                                        .notify(NOTIF_ID, buildNotif(PacketStats.liveText(nt("Hazırlanıyor…", "Starting…", "Запуск…"))));
+                            } catch (Throwable ignored) { }
+                            if (++ntN % 5 == 0) PacketStats.saveUsage();
+                        }
                         if (now - lastSt > 5000) { lastSt = now; flog("durum out=" + pktOut + " in=" + pktIn + " " + PacketStats.summary()); }
                         if (r <= 0) continue;
                         if ((f[0].revents & android.system.OsConstants.POLLIN) != 0) {
@@ -379,7 +388,7 @@ public final class VaxoVpnService extends VpnService {
                     if (!running) return;
                     ((android.app.NotificationManager)
                             getSystemService(NOTIFICATION_SERVICE))
-                            .notify(NOTIF_ID, buildNotif(text));
+                            .notify(NOTIF_ID, buildNotif(PacketStats.liveText(text)));
                 } catch (Throwable ignored) {
                 }
             }
