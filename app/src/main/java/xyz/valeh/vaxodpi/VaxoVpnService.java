@@ -229,7 +229,7 @@ public final class VaxoVpnService extends VpnService {
         }
         int fl = android.app.PendingIntent.FLAG_UPDATE_CURRENT
                 | android.app.PendingIntent.FLAG_IMMUTABLE;
-        Intent open = new Intent(this, MainActivity.class);
+        Intent open = new Intent(this, ConnectionsActivity.class);
         open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         android.app.PendingIntent openPi =
                 android.app.PendingIntent.getActivity(this, 0, open, fl);
@@ -269,24 +269,6 @@ public final class VaxoVpnService extends VpnService {
     }
 
     private long lastSt;
-    private int dbgN;
-    private void dbgPkt(String d, byte[] b, int n) {
-        if (n < 20) return;
-        int v = (b[0] >> 4) & 15;
-        if (v != 4) return;
-        int ihl = (b[0] & 15) * 4, pr = b[9] & 255;
-        String sa = (b[12]&255)+"."+(b[13]&255)+"."+(b[14]&255)+"."+(b[15]&255);
-        String da = (b[16]&255)+"."+(b[17]&255)+"."+(b[18]&255)+"."+(b[19]&255);
-        String x = "";
-        if ((pr == 6 || pr == 17) && n >= ihl + 4) {
-            x = " " + (((b[ihl]&255)<<8)|(b[ihl+1]&255)) + ">" + (((b[ihl+2]&255)<<8)|(b[ihl+3]&255));
-            if (pr == 6 && n >= ihl + 14) x += " fl=0x" + Integer.toHexString(b[ihl+13]&255);
-        }
-        boolean keep = d.equals("IN") ? n > 44 : (da.equals("1.1.1.1") && pr == 6);
-        if (!keep || dbgN >= 150) return;
-        dbgN++;
-        flog(d + " p" + pr + " " + sa + ">" + da + x + " len=" + n);
-    }
 
     private void startPump(final java.io.FileDescriptor tun, final java.io.FileDescriptor a) {
         pumping = true;

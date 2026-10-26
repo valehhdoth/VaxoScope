@@ -16,6 +16,7 @@ final class PacketStats {
         long pOut, bOut, pIn, bIn, first, last;
         volatile String name;
         volatile int uid = -2;
+        volatile String guess;
         final ArrayDeque<Pkt> pkts = new ArrayDeque<>();
         List<Pkt> snapshot() { synchronized (pkts) { return new ArrayList<>(pkts); } }
     }
@@ -34,6 +35,150 @@ final class PacketStats {
     private static volatile android.net.ConnectivityManager cm;
     private static final java.util.concurrent.ExecutorService EX =
             java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    // ---------- IP -> ad, DNS gecmisi, suzulmus PCAP ----------
+    static final ConcurrentHashMap<String, String> IPNAME = new ConcurrentHashMap<>();
+
+    static final class Dns {
+        long t; String name; int id, qtype; Conn conn;
+        volatile int rcode = -1;
+        volatile String ans = "";
+    }
+
+    static final ArrayDeque<Dns> DNSLOG = new ArrayDeque<>();
+
+    static List<Dns> dnsSnapshot() { synchronized (DNSLOG) { return new ArrayList<>(DNSLOG); } }
+
+    private static int skipName(byte[] b, int p, int n) {
+        while (p < n) {
+            int l = b[p] & 255;
+            if (l == 0) return p + 1;
+            if ((l & 0xC0) == 0xC0) return p + 2;
+            p += l + 1;
+        }
+        return n;
+    }
+
+    private static void hook(Conn c, boolean out, byte[] b, int n, int ip, int pr, int sp, int dp, long t) {
+        try {
+            if (c.name == null) {
+                String g = IPNAME.get(c.raddr);
+                if (g != null) c.guess = g;
+            }
+            if (pr == 17 && n > ip + 8 + 12) {
+                if (out && dp == 53) dnsQuery(c, b, ip + 8, n, t);
+                else if (!out && sp == 53) dnsReply(c, b, ip + 8, n);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    private static void dnsQuery(Conn c, byte[] b, int d, int n, long t) {
+        int fl = u16(b, d + 2);
+        if ((fl & 0x8000) != 0 || u16(b, d + 4) < 1) return;
+        String q = dns(b, d + 12, n);
+        if (q == null) return;
+        int p = skipName(b, d + 12, n);
+        if (p + 4 > n) return;
+        Dns e = new Dns();
+        e.t = t; e.name = q; e.id = u16(b, d); e.qtype = u16(b, p); e.conn = c;
+        synchronized (DNSLOG) {
+            DNSLOG.addLast(e);
+            if (DNSLOG.size() > 600) DNSLOG.removeFirst();
+        }
+    }
+
+    private static void dnsReply(Conn c, byte[] b, int d, int n) {
+        int fl = u16(b, d + 2);
+        if ((fl & 0x8000) == 0) return;
+        int id = u16(b, d), qd = u16(b, d + 4), an = u16(b, d + 6);
+        String q = qd > 0 ? dns(b, d + 12, n) : null;
+        int p = d + 12;
+        for (int i = 0; i < qd && p < n; i++) p = skipName(b, p, n) + 4;
+        StringBuilder ans = new StringBuilder();
+        for (int i = 0; i < an && p + 10 <= n; i++) {
+            p = skipName(b, p, n);
+            if (p + 10 > n) break;
+            int ty = u16(b, p), rl = u16(b, p + 8);
+            p += 10;
+            if (p + rl > n) break;
+            String addr = null;
+            if (ty == 1 && rl == 4) addr = a4(b, p);
+            else if (ty == 28 && rl == 16) addr = a6(b, p);
+            if (addr != null) {
+                if (q != null) IPNAME.put(addr, q);
+                if (ans.length() < 120) {
+                    if (ans.length() > 0) ans.append(", ");
+                    ans.append(addr);
+                }
+            }
+            p += rl;
+        }
+        synchronized (DNSLOG) {
+            Iterator<Dns> it = DNSLOG.descendingIterator();
+            int k = 0;
+            while (it.hasNext() && k++ < 300) {
+                Dns e = it.next();
+                if (e.id == id && e.conn == c && e.rcode < 0) {
+                    e.rcode = fl & 15;
+                    e.ans = ans.toString();
+                    break;
+                }
+            }
+        }
+    }
+
+    static Set<String> keysOf(Collection<Conn> cs) {
+        HashSet<String> k = new HashSet<>();
+        for (Conn c : cs) {
+            k.add(c.proto + "|" + c.laddr + ":" + c.lport + ">" + c.raddr + ":" + c.rport);
+            k.add(c.proto + "|" + c.raddr + ":" + c.rport + ">" + c.laddr + ":" + c.lport);
+        }
+        return k;
+    }
+
+    private static String flowKey(byte[] b, int n) {
+        if (n < 20) return null;
+        int v = (b[0] >> 4) & 15, ip, pr;
+        String sa, da;
+        if (v == 4) { ip = (b[0] & 15) * 4; pr = b[9] & 255; sa = a4(b, 12); da = a4(b, 16); }
+        else if (v == 6 && n >= 44) { ip = 40; pr = b[6] & 255; sa = a6(b, 8); da = a6(b, 24); }
+        else return null;
+        int sp = 0, dp = 0;
+        if ((pr == 6 || pr == 17) && n >= ip + 4) { sp = u16(b, ip); dp = u16(b, ip + 2); }
+        return pr + "|" + sa + ":" + sp + ">" + da + ":" + dp;
+    }
+
+    /** Eslesen paket sayisini dondurur, -1: kayit yok. */
+    static long exportFiltered(OutputStream out, Set<String> keys) throws IOException {
+        long len;
+        synchronized (LK) {
+            if (pw == null) return -1;
+            pw.flush();
+            len = pcapBytes;
+        }
+        File f = new File(dir, "capture.pcap");
+        if (!f.exists() || len <= 24) return -1;
+        long pos = 24, cnt = 0;
+        DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(f), 65536));
+        try {
+            byte[] gh = new byte[24];
+            in.readFully(gh);
+            out.write(gh);
+            byte[] ph = new byte[16];
+            while (pos + 16 <= len) {
+                in.readFully(ph);
+                int incl = (int) rd32(ph, 8, true);
+                if (incl < 0 || incl > 262144 || pos + 16 + incl > len) break;
+                byte[] d = new byte[incl];
+                in.readFully(d);
+                pos += 16 + incl;
+                String k = flowKey(d, incl);
+                if (k != null && keys.contains(k)) { out.write(ph); out.write(d); cnt++; }
+            }
+        } finally { in.close(); }
+        out.flush();
+        return cnt;
+    }
 
     static void init(android.content.Context x) {
         cm = (android.net.ConnectivityManager) x.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
@@ -55,6 +200,8 @@ final class PacketStats {
 
     static void clearAll() {
         TABLE.clear();
+        synchronized (DNSLOG) { DNSLOG.clear(); }
+        IPNAME.clear();
         synchronized (LK) {
             closePcap();
             if (pf != null) pf.delete();
@@ -275,6 +422,7 @@ final class PacketStats {
         }
         c.last = t;
         if (out) { c.pOut++; c.bOut += orig; } else { c.pIn++; c.bIn += orig; }
+        if (live) hook(c, out, b, n, ip, pr, sp, dp, t);
         Pkt p = new Pkt();
         p.t = t; p.out = out; p.orig = orig;
         p.data = Arrays.copyOf(b, Math.min(n, CAP));
@@ -290,7 +438,7 @@ final class PacketStats {
             int off = ip + ((b[ip + 12] >> 4) & 15) * 4;
             if (n > off + 44 && (b[off] & 255) == 0x16) {
                 String s = sni(b, off, n);
-                if (s != null) { c.name = s; if (live) lastName = s; }
+                if (s != null) { c.name = s; if (live) { lastName = s; IPNAME.put(c.raddr, s); } }
             }
         }
     }

@@ -85,7 +85,7 @@ final class VaxoProxy {
             while (running) {
                 try {
                     final Socket c = server.accept();
-                    dbgLog("proxy kabul " + c.getRemoteSocketAddress());
+                    
                     pool.execute(() -> handle(c));
                 } catch (IOException e) {
                     if (!running || server.isClosed()) return;
@@ -135,7 +135,7 @@ final class VaxoProxy {
             } else { c.close(); return; }
             int port = in.readUnsignedShort();
 
-            dbgLog("istek cmd=" + cmd + " atyp=" + atyp + " " + (host != null ? host : "ip") + ":" + port);
+            
             if (cmd == 3) { udp(c, in, out); return; }
             if (cmd != 1) { reply(out, 7); c.close(); return; }
 
@@ -149,23 +149,16 @@ final class VaxoProxy {
             r.setTcpNoDelay(true);
             try {
                 r.connect(new InetSocketAddress(target, port), 10000);
-            } catch (IOException e) { dbgLog("baglanamadi " + target.getHostAddress() + ":" + port + " " + e); reply(out, 5); c.close(); r.close(); return; }
+            } catch (IOException e) {  reply(out, 5); c.close(); r.close(); return; }
             reply(out, 0);
-            dbgLog("baglandi " + target.getHostAddress() + ":" + port);
+            
 
-            byte[] first = new byte[16384];
-            int n = in.read(first);
-            dbgLog("ilk veri n=" + n);
-            if (n < 0) { c.close(); r.close(); return; }
-            OutputStream ro = r.getOutputStream();
-            ro.write(first, 0, n);
-            ro.flush();
-
+            // sunucunun once konustugu protokoller icin dogrudan aktar
             final Socket rs = r, cs = c;
             pool.execute(() -> pipe(rs, cs));
             pipe(cs, rs);
         } catch (Throwable e) {
-            dbgLog("handle hata " + e);
+            
             try { c.close(); } catch (Throwable ignored) {}
             try { if (r != null) r.close(); } catch (Throwable ignored) {}
         }
@@ -227,52 +220,6 @@ final class VaxoProxy {
         return -1;
     }
 
-    private void desync(Socket r, OutputStream o, byte[] b, int n) throws IOException {
-        int sni = findSni(b, n);
-        byte[] d = b;
-        int len = n;
-
-        // TLS kaydını SNI'nın hemen sonrasında iki kayda böl.
-        int recLen = ((b[3] & 0xff) << 8) | (b[4] & 0xff);
-        if (recLen + 5 == n) {
-            int pos = (sni > 5 ? sni - 5 : 1) + 1;
-            if (pos >= 1 && pos < recLen) {
-                d = new byte[n + 5];
-                System.arraycopy(b, 0, d, 0, 3);
-                d[3] = (byte) (pos >> 8); d[4] = (byte) pos;
-                System.arraycopy(b, 5, d, 5, pos);
-                int q = 5 + pos;
-                System.arraycopy(b, 0, d, q, 3);
-                int rest = recLen - pos;
-                d[q + 3] = (byte) (rest >> 8); d[q + 4] = (byte) rest;
-                System.arraycopy(b, 5 + pos, d, q + 5, rest);
-                len = n + 5;
-            }
-        }
-
-        int c1 = 1;
-        int c2 = (sni > 1 && sni + 1 < len) ? sni + 1 : -1;
-
-        if (mode == 0 || mode == 2) {
-            int cut = (mode == 2 && c2 > 0) ? c2 : c1;
-            setTtl(r, 1);
-            o.write(d, 0, cut);
-            o.flush();
-            try { Thread.sleep(5); } catch (InterruptedException ignored) {}
-            setTtl(r, 64);
-            o.write(d, cut, len - cut);
-        } else {
-            o.write(d, 0, c1);
-            o.flush();
-            if (c2 > 0) {
-                o.write(d, c1, c2 - c1);
-                o.flush();
-                o.write(d, c2, len - c2);
-            } else {
-                o.write(d, c1, len - c1);
-            }
-        }
-    }
 
     // ------------------------------------------------------------ UDP ASSOCIATE
 
