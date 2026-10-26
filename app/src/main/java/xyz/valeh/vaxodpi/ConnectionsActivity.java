@@ -64,6 +64,8 @@ public class ConnectionsActivity extends Activity {
 
     int tab, lvl = LIST, selUid, filter, pktMode, selNum;
     boolean imp;
+    String query = "";
+    EditText search;
     PacketStats.Conn selConn;
     PacketStats.Pkt selPkt;
     final Handler h = new Handler(Looper.getMainLooper());
@@ -193,6 +195,15 @@ public class ConnectionsActivity extends Activity {
     static String dest(PacketStats.Conn c) { return c.name != null ? c.name : c.raddr + ":" + c.rport; }
 
     boolean match(PacketStats.Conn c) {
+        if (query.length() > 0) {
+            String hay = ((imp ? "" : label(c.uid)) + " " + dest(c) + " " + c.raddr + ":" + c.rport + " "
+                    + proto(c.proto)).toLowerCase(Locale.ROOT);
+            for (String w : query.split(" ")) if (w.length() > 0 && !hay.contains(w)) return false;
+        }
+        return matchF(c);
+    }
+
+    boolean matchF(PacketStats.Conn c) {
         switch (filter) {
             case 1: return c.proto == 6;
             case 2: return c.proto == 17;
@@ -615,6 +626,23 @@ public class ConnectionsActivity extends Activity {
         gc.addView(gtxt);
         gc.addView(graph, new LinearLayout.LayoutParams(-1, dp(64)));
         topBox.addView(gc, lp(0));
+        search = new EditText(this);
+        search.setHint("Ara: uygulama, site, IP, port…");
+        search.setHintTextColor(OFF);
+        search.setTextColor(Color.WHITE);
+        search.setTextSize(14);
+        search.setSingleLine(true);
+        search.setBackground(rr(CARD, 22, LINE));
+        search.setPadding(dp(18), dp(12), dp(18), dp(12));
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence x, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence x, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable e) {
+                query = e.toString().trim().toLowerCase(Locale.ROOT);
+                refresh();
+            }
+        });
+        topBox.addView(search, lp(10));
         srcRow = new LinearLayout(this);
         srcRow.setPadding(dp(11), 0, dp(11), 0);
         topBox.addView(srcRow, new LinearLayout.LayoutParams(-1, -2));
