@@ -19,6 +19,7 @@ final class PacketStats {
         volatile String guess;
         long sUp, sDown;
         boolean sCnt;
+        boolean rst, chk, blocked;
         final ArrayDeque<Pkt> pkts = new ArrayDeque<>();
         List<Pkt> snapshot() { synchronized (pkts) { return new ArrayList<>(pkts); } }
     }
@@ -63,6 +64,7 @@ final class PacketStats {
 
     private static void hook(Conn c, boolean out, byte[] b, int n, int ip, int pr, int sp, int dp, long t) {
         try {
+            if (c.name != null && !c.chk) { c.chk = true; if (Trackers.host(c.name)) alertTrk(c); }
             if (c.name == null) {
                 String g = IPNAME.get(c.raddr);
                 if (g != null) c.guess = g;
@@ -346,10 +348,144 @@ final class PacketStats {
         return cnt;
     }
 
+    // ---------- engelleme, uyari, dil, temizlik ----------
+    static volatile int lang;
+    static final Set<Integer> BLK_UID = Collections.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>());
+    static final Set<String> BLK_HOST = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private static long lastAlert;
+    private static final HashSet<String> ALERTED = new HashSet<>();
+
+    static void loadLang(android.content.Context x) {
+        android.content.SharedPreferences p = x.getSharedPreferences("vaxodpi", 0);
+        int l;
+        if (p.contains("lang")) {
+            l = p.getInt("lang", 0);
+        } else {
+            String c = Locale.getDefault().getLanguage();
+            l = c.equals("tr") ? 0 : c.equals("ru") ? 2 : 1;
+            p.edit().putInt("lang", l).apply();
+        }
+        lang = l;
+    }
+
+    static void loadBlocks(android.content.Context x) {
+        android.content.SharedPreferences p = x.getSharedPreferences("vaxodpi", 0);
+        BLK_UID.clear();
+        BLK_HOST.clear();
+        Set<String> a = p.getStringSet("blk_apps", null);
+        if (a != null) for (String pk : a) {
+            try { BLK_UID.add(x.getPackageManager().getApplicationInfo(pk, 0).uid); } catch (Throwable ignored) { }
+        }
+        Set<String> h = p.getStringSet("blk_hosts", null);
+        if (h != null) for (String s : h) BLK_HOST.add(s.toLowerCase(Locale.ROOT));
+        for (Conn c : TABLE.values()) c.blocked = false;
+    }
+
+    static boolean hasBlocks() { return !BLK_UID.isEmpty() || !BLK_HOST.isEmpty(); }
+
+    private static boolean hostBlocked(String h) {
+        if (BLK_HOST.isEmpty() || h == null) return false;
+        h = h.toLowerCase(Locale.ROOT);
+        while (true) {
+            if (BLK_HOST.contains(h)) return true;
+            int i = h.indexOf('.');
+            if (i < 0) return false;
+            h = h.substring(i + 1);
+        }
+    }
+
+    private static void resolveNow(Conn c) {
+        int u = -1;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29 && cm != null) {
+                u = cm.getConnectionOwnerUid(c.proto,
+                        new java.net.InetSocketAddress(java.net.InetAddress.getByName(c.laddr), c.lport),
+                        new java.net.InetSocketAddress(java.net.InetAddress.getByName(c.raddr), c.rport));
+            }
+        } catch (Throwable ignored) { }
+        c.uid = u;
+    }
+
+    private static boolean isBlocked(Conn c) {
+        if (c.blocked) return true;
+        if (!BLK_UID.isEmpty() && c.uid == -2 && (c.proto == 6 || c.proto == 17)) resolveNow(c);
+        if (c.uid >= 0 && BLK_UID.contains(c.uid)) { c.blocked = true; return true; }
+        if (c.rport != 53 && c.rport != 853 && hostBlocked(c.name != null ? c.name : c.guess)) {
+            c.blocked = true;
+            return true;
+        }
+        return false;
+    }
+
+    static void alertTrk(Conn c) {
+        try {
+            if (appCtx == null || !appCtx.getSharedPreferences("vaxodpi", 0).getBoolean("alert_trk", false)) return;
+            long now = System.currentTimeMillis();
+            String host = c.name;
+            synchronized (ALERTED) {
+                if (now - lastAlert < 8000 || !ALERTED.add(host)) return;
+                lastAlert = now;
+            }
+            android.app.NotificationManager nm = (android.app.NotificationManager)
+                    appCtx.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+            android.app.Notification.Builder b;
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(new android.app.NotificationChannel("vaxo_alert",
+                        lang == 1 ? "Tracker alerts" : lang == 2 ? "Уведомления о трекерах" : "İzleyici uyarıları",
+                        android.app.NotificationManager.IMPORTANCE_DEFAULT));
+                b = new android.app.Notification.Builder(appCtx, "vaxo_alert");
+            } else {
+                b = new android.app.Notification.Builder(appCtx);
+            }
+            String ap = c.uid >= 0 ? pkgOf(c.uid) : "?";
+            b.setSmallIcon(android.R.drawable.stat_sys_warning)
+                    .setContentTitle((lang == 1 ? "Tracker: " : lang == 2 ? "Трекер: " : "İzleyici: ") + host)
+                    .setContentText(ap + " · " + c.raddr + ":" + c.rport)
+                    .setAutoCancel(true);
+            nm.notify(9000 + (int) (now % 1000), b.build());
+        } catch (Throwable ignored) { }
+    }
+
+    static void purgeOld() {
+        long now = System.currentTimeMillis();
+        for (Iterator<Map.Entry<String, Conn>> it = TABLE.entrySet().iterator(); it.hasNext(); ) {
+            Conn c = it.next().getValue();
+            if (now - c.last > 900000 && c.sCnt) it.remove();
+        }
+        if (IPNAME.size() > 6000) IPNAME.clear();
+    }
+
+    private static final String[][] LOC = {
+        {"Kaynak port", "Src port", "Порт ист."}, {"Hedef port", "Dst port", "Порт назн."},
+        {"Kaynak", "Source", "Источник"}, {"Hedef", "Dest", "Назн."},
+        {"Bayraklar", "Flags", "Флаги"}, {"Bayrak", "Flags", "Флаги"},
+        {"Başlık", "Header", "Заголовок"}, {"Toplam", "Total", "Всего"}, {"Tanıtıcı", "ID", "Идент."},
+        {"Sağlama", "Checksum", "Контр.сумма"}, {"Protokol", "Protocol", "Протокол"},
+        {"Sonraki", "Next", "След."}, {"Yük", "Payload", "Данные"}, {"Pencere", "Window", "Окно"},
+        {"Uzunluk", "Length", "Длина"}, {"Kayıt", "Record", "Запись"},
+        {"Uygulama verisi (şifreli)", "Application data (encrypted)", "Данные приложения (шифр.)"},
+        {"Uyarı", "Alert", "Предупр."}, {"Tür", "Type", "Тип"}, {"Yanıt", "Reply", "Ответ"},
+        {"Sorgu", "Query", "Запрос"}, {"Soru", "Questions", "Вопросы"}, {"Tip", "Type", "Тип"},
+        {"Kod", "Code", "Код"}, {"\n  Ad ", "\n  Name ", "\n  Имя "},
+        {"QUIC / HTTP3 olabilir, içerik şifreli.", "Possibly QUIC / HTTP3, content is encrypted.", "Возможно QUIC / HTTP3, содержимое зашифровано."},
+        {"(ayrıştırma hatası)", "(parse error)", "(ошибка разбора)"},
+        {"DNS yanıt ", "DNS reply ", "DNS ответ "}, {"DNS sorgu ", "DNS query ", "DNS запрос "},
+        {"tür ", "type ", "тип "}
+    };
+
+    static String loc(String s) {
+        int k = lang;
+        if (k < 1 || k > 2) return s;
+        for (String[] r : LOC) s = s.replace(r[0], r[k]);
+        return s;
+    }
+
     static void init(android.content.Context x) {
         cm = (android.net.ConnectivityManager) x.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
         dir = x.getFilesDir();
         appCtx = x.getApplicationContext();
+        loadLang(x);
+        loadBlocks(x);
         pcapOn = x.getSharedPreferences("vaxodpi", 0).getBoolean("cap_on", true);
     }
 
@@ -518,14 +654,21 @@ final class PacketStats {
     }
 
     // ---------- Canlı paket ----------
-    static void onPacket(boolean out, byte[] b, int n) {
+    static volatile Conn curConn;
+
+    /** true: paketi ilet, false: engellendi, dusur. */
+    static boolean onPacket(boolean out, byte[] b, int n) {
         try {
             long t = System.currentTimeMillis();
             lastPkt = t;
             if (out) totOut += n; else totIn += n;
             writePcap(b, n, t);
+            curConn = null;
             parse(TABLE, out, b, n, n, t, true);
+            Conn c = curConn;
+            if (out && c != null && hasBlocks()) return !isBlocked(c);
         } catch (Throwable ignored) { }
+        return true;
     }
 
     private static void resolve(final Conn c) {
@@ -588,11 +731,13 @@ final class PacketStats {
             if (live && out && (pr == 6 || pr == 17)) resolve(c);
         }
         c.last = t;
+        if (live) curConn = c;
         if (out) { c.pOut++; c.bOut += orig; } else { c.pIn++; c.bIn += orig; }
+        if (pr == 6 && n >= ip + 14 && (b[ip + 13] & 4) != 0) c.rst = true;
         if (live) hook(c, out, b, n, ip, pr, sp, dp, t);
         Pkt p = new Pkt();
         p.t = t; p.out = out; p.orig = orig;
-        p.data = Arrays.copyOf(b, Math.min(n, CAP));
+        p.data = Arrays.copyOf(b, Math.min(n, (c.pOut + c.pIn) <= 8 ? CAP : 96));
         synchronized (c.pkts) {
             c.pkts.addLast(p);
             if (c.pkts.size() > KEEP) c.pkts.removeFirst();
@@ -753,7 +898,7 @@ final class PacketStats {
         } catch (Throwable e) {
             s.append("\n(ayrıştırma hatası)");
         }
-        return new String[]{br, s.toString()};
+        return new String[]{loc(br), loc(s.toString())};
     }
 
     static String hexdump(byte[] d) {

@@ -299,13 +299,13 @@ public final class VaxoVpnService extends VpnService {
                                 ((android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE))
                                         .notify(NOTIF_ID, buildNotif(PacketStats.liveText(nt("Hazırlanıyor…", "Starting…", "Запуск…"))));
                             } catch (Throwable ignored) { }
-                            if (++ntN % 5 == 0) PacketStats.saveUsage();
+                            if (++ntN % 5 == 0) { PacketStats.saveUsage(); PacketStats.purgeOld(); }
                         }
                         if (now - lastSt > 5000) { lastSt = now; flog("durum out=" + pktOut + " in=" + pktIn + " " + PacketStats.summary()); }
                         if (r <= 0) continue;
                         if ((f[0].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(tun, buf, 0, buf.length);
-                            if (n > 0) { pktOut++; PacketStats.onPacket(true, buf, n); android.system.Os.write(a, buf, 0, n); }
+                            if (n > 0) { pktOut++; if (PacketStats.onPacket(true, buf, n)) android.system.Os.write(a, buf, 0, n); }
                         }
                         if ((f[1].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(a, buf, 0, buf.length);

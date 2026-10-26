@@ -20,11 +20,13 @@ import android.widget.*;
 import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class ConnectionsActivity extends Activity {
     static final int LIST = 0, APP = 1, CONN = 2, PKTS = 3, PKT = 4, ALL = -99, DNSL = 5, FLOW = 6, REP = 7;
     static final int CARD = 0xFF0C0C0C, LINE = 0xFF222222, DIM = 0xFF8A8A8A, OFF = 0xFF5E5E5E;
-    static final String[] FN = {"Tümü", "TCP", "UDP", "DNS", "TLS"};
+    static final int RED = 0xFFE5484D, GRN = 0xFF3FB950, BLU = 0xFF4C8DFF, ORG = 0xFFF0883E;
     static final SimpleDateFormat TF = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
 
     static class Graph extends View {
@@ -62,12 +64,12 @@ public class ConnectionsActivity extends Activity {
         }
     }
 
-    int tab, lvl = LIST, selUid, filter, pktMode, selNum;
+    int tab, lvl = LIST, selUid, filter, pktMode, selNum, lang, rowAccent;
     boolean imp;
     String query = "";
-    EditText search;
     PacketStats.Conn selConn;
     PacketStats.Pkt selPkt;
+    Set<String> pendKeys;
     final Handler h = new Handler(Looper.getMainLooper());
     final HashMap<Integer, String> labels = new HashMap<>();
     final HashMap<Integer, Drawable> icons = new HashMap<>();
@@ -76,19 +78,23 @@ public class ConnectionsActivity extends Activity {
     final List<PacketStats.Pkt> pkts = new ArrayList<>();
     final List<PacketStats.Dns> dnsRows = new ArrayList<>();
     final List<Object[]> repRows = new ArrayList<>();
-    Set<String> pendKeys;
     float d, gDown, gUp;
     long pendingUntil, maxBytes = 1, lastT, lastIn, lastOut;
     String crash = "";
     SharedPreferences sp;
     TextView sub, status, gtxt, empty, detail, btnList, btnGo, btnSet;
+    EditText search;
     Graph graph;
-    LinearLayout topBox, filtRow, srcRow, detActions, setBox, listPage;
+    LinearLayout topBox, filtRow, srcRow, appRow, detActions, detActions2, setBox, listPage;
     ListView lv;
     ScrollView detSv, setSv;
     BaseAdapter ad;
 
+    String t(String tr, String en, String ru) { return lang == 1 ? en : lang == 2 ? ru : tr; }
+
     int dp(float v) { return (int) (v * d); }
+
+    void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
 
     GradientDrawable rr(int fill, float r, int stroke) {
         GradientDrawable g = new GradientDrawable();
@@ -98,14 +104,14 @@ public class ConnectionsActivity extends Activity {
         return g;
     }
 
-    TextView tv(String t, int sz, int col) {
+    TextView tv(String s, int sz, int col) {
         TextView x = new TextView(this);
-        x.setText(t); x.setTextSize(sz); x.setTextColor(col);
+        x.setText(s); x.setTextSize(sz); x.setTextColor(col);
         return x;
     }
 
-    TextView bold(String t, int sz, int col) {
-        TextView x = tv(t, sz, col);
+    TextView bold(String s, int sz, int col) {
+        TextView x = tv(s, sz, col);
         x.setTypeface(Typeface.DEFAULT_BOLD);
         return x;
     }
@@ -124,8 +130,8 @@ public class ConnectionsActivity extends Activity {
         return p;
     }
 
-    TextView chip(String t, boolean on, int padV, View.OnClickListener l) {
-        TextView c = bold(t, 12, on ? Color.BLACK : DIM);
+    TextView chip(String s, boolean on, int padV, View.OnClickListener l) {
+        TextView c = bold(s, 12, on ? Color.BLACK : DIM);
         c.setGravity(Gravity.CENTER);
         c.setBackground(on ? rr(Color.WHITE, 22, 0) : rr(0xFF141414, 22, 0xFF333333));
         c.setPadding(dp(6), dp(padV), dp(6), dp(padV));
@@ -139,12 +145,21 @@ public class ConnectionsActivity extends Activity {
         r.addView(c, p);
     }
 
+    TextView btn(String s, boolean primary, View.OnClickListener l) {
+        TextView b = bold(s, 15, primary ? Color.BLACK : Color.WHITE);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(primary ? rr(Color.WHITE, 26, 0) : rr(Color.BLACK, 26, 0xFF444444));
+        b.setPadding(0, dp(14), 0, dp(14));
+        b.setOnClickListener(l);
+        return b;
+    }
+
     // ---------- yardımcılar ----------
     String label(int uid) {
-        if (uid < 0) return "Bilinmeyen";
-        if (uid == 0) return "Sistem (root)";
-        if (uid == 1000) return "Android sistemi";
-        if (uid == 1051) return "Sistem DNS";
+        if (uid < 0) return t("Bilinmeyen", "Unknown", "Неизвестно");
+        if (uid == 0) return t("Sistem (root)", "System (root)", "Система (root)");
+        if (uid == 1000) return t("Android sistemi", "Android system", "Система Android");
+        if (uid == 1051) return t("Sistem DNS", "System DNS", "Системный DNS");
         String s = labels.get(uid);
         if (s != null) return s;
         try {
@@ -178,32 +193,41 @@ public class ConnectionsActivity extends Activity {
         return x;
     }
 
+    String pkgLabel(String pk) {
+        if (pk.equals("?")) return t("Bilinmeyen", "Unknown", "Неизвестно");
+        if (pk.startsWith("uid:")) {
+            try { return label(Integer.parseInt(pk.substring(4))); } catch (Throwable e) { return pk; }
+        }
+        try {
+            PackageManager pm = getPackageManager();
+            return pm.getApplicationLabel(pm.getApplicationInfo(pk, 0)).toString();
+        } catch (Throwable e) { return pk; }
+    }
+
+    Drawable pkgIcon(String pk) {
+        try { return getPackageManager().getApplicationIcon(pk); }
+        catch (Throwable e) { return getPackageManager().getDefaultActivityIcon(); }
+    }
+
     static String fmt(long b) {
         if (b < 1024) return b + " B";
         if (b < 1048576) return (b / 1024) + " KB";
         return String.format(Locale.US, "%.1f MB", b / 1048576.0);
     }
 
-    static String dur(long ms) {
+    String dur(long ms) {
         long s = ms / 1000;
-        if (s < 60) return s + " sn";
-        if (s < 3600) return (s / 60) + " dk " + (s % 60) + " sn";
-        return (s / 3600) + " sa " + ((s % 3600) / 60) + " dk";
+        if (s < 60) return s + t(" sn", " s", " с");
+        if (s < 3600) return (s / 60) + t(" dk", " min", " мин") + " " + (s % 60) + t(" sn", " s", " с");
+        return (s / 3600) + t(" sa", " h", " ч") + " " + ((s % 3600) / 60) + t(" dk", " min", " мин");
     }
 
-    static String clock(long t) { return new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date(t)); }
+    static String clock(long x) { return new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date(x)); }
 
     static String proto(int p) { return p == 6 ? "TCP" : p == 17 ? "UDP" : p == 1 ? "ICMP" : "IP/" + p; }
 
-    static String dest(PacketStats.Conn c) { return c.name != null ? c.name : c.guess != null ? "≈ " + c.guess : c.raddr + ":" + c.rport; }
-
-    boolean match(PacketStats.Conn c) {
-        if (query.length() > 0) {
-            String hay = ((imp ? "" : label(c.uid)) + " " + dest(c) + " " + c.raddr + ":" + c.rport + " "
-                    + proto(c.proto)).toLowerCase(Locale.ROOT);
-            if (!qmatch(c, hay)) return false;
-        }
-        return matchF(c);
+    static String dest(PacketStats.Conn c) {
+        return c.name != null ? c.name : c.guess != null ? "≈ " + c.guess : c.raddr + ":" + c.rport;
     }
 
     static long parseSize(String s) {
@@ -217,9 +241,9 @@ public class ConnectionsActivity extends Activity {
     }
 
     boolean qmatch(PacketStats.Conn c, String hay) {
-        String[] t = query.split(" +");
-        for (int i = 0; i < t.length; i++) {
-            String w = t[i];
+        String[] tk = query.split(" +");
+        for (int i = 0; i < tk.length; i++) {
+            String w = tk[i];
             if (w.length() == 0) continue;
             if (w.equals("tcp")) { if (c.proto != 6) return false; }
             else if (w.equals("udp")) { if (c.proto != 17) return false; }
@@ -229,9 +253,10 @@ public class ConnectionsActivity extends Activity {
             else if (w.equals("quic")) { if (!(c.proto == 17 && c.rport == 443)) return false; }
             else if (w.equals("ipv6")) { if (c.raddr.indexOf(':') < 0) return false; }
             else if (w.equals("ipv4")) { if (c.raddr.indexOf(':') >= 0) return false; }
-            else if (w.equals("izleyici") || w.equals("tracker") || w.equals("reklam")) { if (!Trackers.is(c)) return false; }
-            else if ((w.equals("port") || w.equals("ip") || w.equals("app") || w.equals("host")) && i + 1 < t.length) {
-                String a = t[++i];
+            else if (w.equals("izleyici") || w.equals("tracker") || w.equals("reklam") || w.equals("трекер")) { if (!Trackers.is(c)) return false; }
+            else if (w.equals("engelli") || w.equals("blocked") || w.equals("блок")) { if (!c.blocked) return false; }
+            else if ((w.equals("port") || w.equals("ip") || w.equals("app") || w.equals("host")) && i + 1 < tk.length) {
+                String a = tk[++i];
                 if (w.equals("port")) { if (!(String.valueOf(c.rport).equals(a) || String.valueOf(c.lport).equals(a))) return false; }
                 else if (w.equals("ip")) { if (!c.raddr.startsWith(a)) return false; }
                 else if (w.equals("app")) { if (imp || !label(c.uid).toLowerCase(Locale.ROOT).contains(a)) return false; }
@@ -243,7 +268,12 @@ public class ConnectionsActivity extends Activity {
         return true;
     }
 
-    boolean matchF(PacketStats.Conn c) {
+    boolean match(PacketStats.Conn c) {
+        if (query.length() > 0) {
+            String hay = ((imp ? "" : label(c.uid)) + " " + dest(c) + " " + c.raddr + ":" + c.rport + " "
+                    + proto(c.proto)).toLowerCase(Locale.ROOT);
+            if (!qmatch(c, hay)) return false;
+        }
         switch (filter) {
             case 1: return c.proto == 6;
             case 2: return c.proto == 17;
@@ -251,6 +281,21 @@ public class ConnectionsActivity extends Activity {
             case 4: return c.proto == 6 && (c.rport == 443 || c.rport == 853 || c.rport == 8443);
             default: return true;
         }
+    }
+
+    int accentOf(PacketStats.Conn c) {
+        if (c.blocked) return ORG;
+        if (c.rst) return RED;
+        if (c.rport == 53 || c.rport == 853 || c.lport == 53) return BLU;
+        if (c.proto == 6 && (c.rport == 443 || c.rport == 8443)) return GRN;
+        return 0;
+    }
+
+    int pktAccent(String br) {
+        if (br.contains("RST")) return RED;
+        if (br.startsWith("DNS")) return BLU;
+        if (br.contains("TLS")) return GRN;
+        return 0;
     }
 
     int minLvl() { return imp ? APP : LIST; }
@@ -279,18 +324,28 @@ public class ConnectionsActivity extends Activity {
         pendingUntil = 0;
     }
 
-    // ---------- PCAP dışa / içe aktarma ----------
-    void exportPcap() {
+    // ---------- PCAP ----------
+    void exportKeys(Set<String> keys, String tag) {
         if (PacketStats.pcapPkts == 0) {
-            Toast.makeText(this, "Kayıtlı paket yok. Önce VPN'i açıp trafik oluştur.", Toast.LENGTH_LONG).show();
+            toast(t("Kayıtlı paket yok. PCAP kaydı açık olmalı.", "No recorded packets. PCAP recording must be on.", "Нет записанных пакетов. Включите запись PCAP."));
             return;
         }
-        pendKeys = null;
+        pendKeys = keys;
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.setType("application/vnd.tcpdump.pcap");
-        i.putExtra(Intent.EXTRA_TITLE, "vaxoscope-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".pcap");
+        i.putExtra(Intent.EXTRA_TITLE, "vaxoscope-" + tag + "-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".pcap");
         startActivityForResult(i, 3);
+    }
+
+    void exportPcap() { exportKeys(null, "all"); }
+
+    void exportApp() {
+        List<PacketStats.Conn> all = new ArrayList<>();
+        for (PacketStats.Conn c : PacketStats.TABLE.values()) if ((c.uid < 0 ? -1 : c.uid) == selUid) all.add(c);
+        String tag = label(selUid).replaceAll("[^A-Za-z0-9]", "");
+        if (tag.length() == 0) tag = "app";
+        exportKeys(PacketStats.keysOf(all), tag);
     }
 
     void importPcap() {
@@ -300,39 +355,258 @@ public class ConnectionsActivity extends Activity {
         startActivityForResult(i, 4);
     }
 
+    // ---------- yedek ----------
+    JSONObject dump(String name) throws Exception {
+        JSONObject j = new JSONObject();
+        for (Map.Entry<String, ?> e : getSharedPreferences(name, 0).getAll().entrySet()) {
+            Object v = e.getValue();
+            JSONObject x = new JSONObject();
+            if (v instanceof Boolean) { x.put("t", "b"); x.put("v", v); }
+            else if (v instanceof Integer) { x.put("t", "i"); x.put("v", v); }
+            else if (v instanceof Long) { x.put("t", "l"); x.put("v", v); }
+            else if (v instanceof Float) { x.put("t", "f"); x.put("v", ((Float) v).doubleValue()); }
+            else if (v instanceof String) { x.put("t", "s"); x.put("v", v); }
+            else if (v instanceof Set) {
+                JSONArray a = new JSONArray();
+                for (Object o : (Set<?>) v) a.put(String.valueOf(o));
+                x.put("t", "ss"); x.put("v", a);
+            } else continue;
+            j.put(e.getKey(), x);
+        }
+        return j;
+    }
+
+    void load(String name, JSONObject j) throws Exception {
+        SharedPreferences.Editor e = getSharedPreferences(name, 0).edit();
+        e.clear();
+        Iterator<String> it = j.keys();
+        while (it.hasNext()) {
+            String k = it.next();
+            JSONObject x = j.getJSONObject(k);
+            String ty = x.getString("t");
+            if (ty.equals("b")) e.putBoolean(k, x.getBoolean("v"));
+            else if (ty.equals("i")) e.putInt(k, x.getInt("v"));
+            else if (ty.equals("l")) e.putLong(k, x.getLong("v"));
+            else if (ty.equals("f")) e.putFloat(k, (float) x.getDouble("v"));
+            else if (ty.equals("s")) e.putString(k, x.getString("v"));
+            else if (ty.equals("ss")) {
+                JSONArray a = x.getJSONArray("v");
+                HashSet<String> s = new HashSet<>();
+                for (int i = 0; i < a.length(); i++) s.add(a.getString(i));
+                e.putStringSet(k, s);
+            }
+        }
+        e.apply();
+    }
+
+    void doBackup(final Uri u) {
+        new Thread(() -> {
+            String msg;
+            try (OutputStream o = getContentResolver().openOutputStream(u)) {
+                PacketStats.saveUsage();
+                JSONObject r = new JSONObject();
+                r.put("app", "VaxoScope");
+                r.put("v", 1);
+                r.put("prefs", dump("vaxodpi"));
+                r.put("usage", dump("vaxo_usage"));
+                o.write(r.toString(1).getBytes("UTF-8"));
+                msg = t("Yedek kaydedildi", "Backup saved", "Резервная копия сохранена");
+            } catch (Throwable e) { msg = "Hata: " + e.getMessage(); }
+            final String m = msg;
+            runOnUiThread(() -> toast(m));
+        }).start();
+    }
+
+    void doRestore(final Uri u) {
+        new Thread(() -> {
+            String msg;
+            try (InputStream in = getContentResolver().openInputStream(u)) {
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = in.read(buf)) > 0) bo.write(buf, 0, r);
+                JSONObject j = new JSONObject(bo.toString("UTF-8"));
+                if (!"VaxoScope".equals(j.optString("app"))) throw new Exception("x");
+                load("vaxodpi", j.getJSONObject("prefs"));
+                load("vaxo_usage", j.getJSONObject("usage"));
+                msg = t("Yedek geri yüklendi", "Backup restored", "Копия восстановлена");
+            } catch (Throwable e) {
+                msg = t("Geçerli bir yedek dosyası değil", "Not a valid backup file", "Недействительный файл копии");
+            }
+            final String m = msg;
+            runOnUiThread(() -> {
+                toast(m);
+                lang = sp.getInt("lang", 0);
+                PacketStats.lang = lang;
+                PacketStats.pcapOn = sp.getBoolean("cap_on", true);
+                PacketStats.loadBlocks(this);
+                applyLang();
+            });
+        }).start();
+    }
+
     @Override protected void onActivityResult(int rq, int rs, Intent data) {
         if (rq == 1) { if (rs == RESULT_OK) launch(); else pendingUntil = 0; return; }
         if (rs != RESULT_OK || data == null || data.getData() == null) return;
         final Uri u = data.getData();
         if (rq == 3) {
+            final Set<String> keys = pendKeys;
             new Thread(() -> {
                 String msg;
                 try (OutputStream o = getContentResolver().openOutputStream(u)) {
-                    long n = pendKeys == null ? PacketStats.exportTo(o) : PacketStats.exportFiltered(o, pendKeys);
-                    msg = n < 0 ? "Kayıtlı paket yok" : pendKeys == null ? "Kaydedildi: " + fmt(n) : n == 0 ? "Bu bağlantıya ait kayıtlı paket bulunamadı" : "Kaydedildi: " + n + " paket";
+                    long n = keys == null ? PacketStats.exportTo(o) : PacketStats.exportFiltered(o, keys);
+                    if (n < 0) msg = t("Kayıtlı paket yok", "No recorded packets", "Нет записанных пакетов");
+                    else if (keys == null) msg = t("Kaydedildi: ", "Saved: ", "Сохранено: ") + fmt(n);
+                    else if (n == 0) msg = t("Eşleşen kayıtlı paket bulunamadı", "No matching recorded packets", "Подходящих пакетов не найдено");
+                    else msg = t("Kaydedildi: ", "Saved: ", "Сохранено: ") + n + t(" paket", " packets", " пакетов");
                 } catch (Throwable e) { msg = "Hata: " + e.getMessage(); }
                 final String m = msg;
-                runOnUiThread(() -> Toast.makeText(this, m, Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> toast(m));
             }).start();
         } else if (rq == 4) {
             new Thread(() -> {
                 int n;
-                String msg;
                 try (InputStream in = getContentResolver().openInputStream(u)) {
                     n = PacketStats.importFrom(in);
                 } catch (Throwable e) { n = -9; }
-                if (n >= 0) msg = n + " paket içe aktarıldı";
-                else if (n == -3) msg = "pcapng desteklenmiyor, klasik .pcap kullan";
-                else if (n == -2) msg = "Bu bağlantı türü desteklenmiyor";
-                else if (n == -1) msg = "Geçerli bir pcap dosyası değil";
-                else msg = "Dosya okunamadı";
+                String msg;
+                if (n >= 0) msg = n + t(" paket içe aktarıldı", " packets imported", " пакетов импортировано");
+                else if (n == -2) msg = t("Bu bağlantı türü desteklenmiyor", "This link type is not supported", "Этот тип канала не поддерживается");
+                else if (n == -1) msg = t("Geçerli bir pcap dosyası değil", "Not a valid pcap file", "Недействительный файл pcap");
+                else msg = t("Dosya okunamadı", "Could not read file", "Не удалось прочитать файл");
                 final String m = msg;
                 final boolean ok = n >= 0;
                 runOnUiThread(() -> {
-                    Toast.makeText(this, m, Toast.LENGTH_LONG).show();
+                    toast(m);
                     if (ok) { imp = true; selUid = ALL; tab = 0; buildFilters(); go(APP); }
                 });
             }).start();
+        } else if (rq == 5) doBackup(u);
+        else if (rq == 6) doRestore(u);
+    }
+
+    // ---------- engelleme ----------
+    boolean hostIsBlocked(String hh) {
+        return sp.getStringSet("blk_hosts", new HashSet<String>()).contains(hh);
+    }
+
+    void toggleBlockApp(String pk) {
+        if (pk.equals("-") || selUid < 10000) {
+            toast(t("Sistem uygulamaları engellenemez", "System apps cannot be blocked", "Системные приложения нельзя блокировать"));
+            return;
+        }
+        HashSet<String> s = new HashSet<>(sp.getStringSet("blk_apps", new HashSet<String>()));
+        if (!s.add(pk)) s.remove(pk);
+        sp.edit().putStringSet("blk_apps", s).apply();
+        PacketStats.loadBlocks(this);
+        buildAppRow();
+        refresh();
+    }
+
+    void toggleBlockHost(String hh) {
+        HashSet<String> s = new HashSet<>(sp.getStringSet("blk_hosts", new HashSet<String>()));
+        if (!s.add(hh)) s.remove(hh);
+        sp.edit().putStringSet("blk_hosts", s).apply();
+        PacketStats.loadBlocks(this);
+        buildDetActions();
+        refresh();
+    }
+
+    void manageBlocks() {
+        final List<String> keys = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        for (String pk : sp.getStringSet("blk_apps", new HashSet<String>())) {
+            keys.add("a:" + pk);
+            names.add(t("Uygulama: ", "App: ", "Приложение: ") + pkgLabel(pk));
+        }
+        for (String hh : sp.getStringSet("blk_hosts", new HashSet<String>())) {
+            keys.add("h:" + hh);
+            names.add(t("Site: ", "Host: ", "Хост: ") + hh);
+        }
+        if (keys.isEmpty()) { toast(t("Engelli öğe yok", "Nothing is blocked", "Нет блокировок")); return; }
+        final boolean[] chk = new boolean[keys.size()];
+        Arrays.fill(chk, true);
+        new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(t("Engelli liste (işareti kaldır = engeli aç)", "Blocked list (uncheck = unblock)", "Блокировки (снять отметку = разблокировать)"))
+                .setMultiChoiceItems(names.toArray(new String[0]), chk, (dlg, which, on) -> chk[which] = on)
+                .setPositiveButton(t("Kaydet", "Save", "Сохранить"), (dlg, w) -> {
+                    HashSet<String> a = new HashSet<>(), hs = new HashSet<>();
+                    for (int i = 0; i < chk.length; i++) {
+                        if (!chk[i]) continue;
+                        String k = keys.get(i);
+                        if (k.startsWith("a:")) a.add(k.substring(2)); else hs.add(k.substring(2));
+                    }
+                    sp.edit().putStringSet("blk_apps", a).putStringSet("blk_hosts", hs).apply();
+                    PacketStats.loadBlocks(this);
+                    buildSettings();
+                })
+                .setNegativeButton(t("İptal", "Cancel", "Отмена"), null)
+                .show();
+    }
+
+    // ---------- uygulama seçimi / log ----------
+    void pickApps() {
+        new Thread(() -> {
+            PackageManager pm = getPackageManager();
+            Intent li = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+            List<android.content.pm.ResolveInfo> ri = pm.queryIntentActivities(li, 0);
+            final List<String[]> items = new ArrayList<>();
+            HashSet<String> seen = new HashSet<>();
+            for (android.content.pm.ResolveInfo r : ri) {
+                String p = r.activityInfo.packageName;
+                if (p.equals(getPackageName()) || !seen.add(p)) continue;
+                items.add(new String[]{r.loadLabel(pm).toString(), p});
+            }
+            Collections.sort(items, (a, b) -> a[0].compareToIgnoreCase(b[0]));
+            runOnUiThread(() -> showPicker(items));
+        }).start();
+    }
+
+    void showPicker(final List<String[]> items) {
+        Set<String> cur = sp.getStringSet("apps", null);
+        final String[] names = new String[items.size()];
+        final boolean[] chk = new boolean[items.size()];
+        for (int i = 0; i < names.length; i++) {
+            names[i] = items.get(i)[0];
+            chk[i] = cur != null && cur.contains(items.get(i)[1]);
+        }
+        new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(t("İzlenecek uygulamalar", "Apps to monitor", "Отслеживаемые приложения"))
+                .setMultiChoiceItems(names, chk, (dlg, which, on) -> chk[which] = on)
+                .setPositiveButton(t("Kaydet", "Save", "Сохранить"), (dlg, w) -> {
+                    HashSet<String> res = new HashSet<>();
+                    for (int i = 0; i < chk.length; i++) if (chk[i]) res.add(items.get(i)[1]);
+                    sp.edit().putStringSet("apps", res).apply();
+                    buildSettings();
+                })
+                .setNeutralButton(t("Hepsini izle", "Monitor all", "Следить за всеми"), (dlg, w) -> { sp.edit().remove("apps").apply(); buildSettings(); })
+                .setNegativeButton(t("İptal", "Cancel", "Отмена"), null)
+                .show();
+    }
+
+    void shareLog() {
+        try {
+            File f = new File(getFilesDir(), "vaxodpi.log");
+            String s = "";
+            if (f.exists()) {
+                long len = f.length();
+                byte[] bb = new byte[(int) Math.min(len, 60000)];
+                try (FileInputStream in = new FileInputStream(f)) {
+                    in.skip(Math.max(0, len - bb.length));
+                    int n = in.read(bb);
+                    s = new String(bb, 0, Math.max(n, 0), "UTF-8");
+                }
+            }
+            if (s.length() == 0) {
+                toast(t("Log boş. Log kaydını aç ve bağlan.", "Log is empty. Turn on logging and connect.", "Лог пуст. Включите журнал и подключитесь."));
+                return;
+            }
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("text/plain");
+            i.putExtra(Intent.EXTRA_TEXT, "VaxoScope log\n" + s);
+            startActivity(Intent.createChooser(i, t("Logu paylaş", "Share log", "Поделиться логом")));
+        } catch (Throwable e) {
+            toast(t("Log okunamadı", "Could not read log", "Не удалось прочитать лог"));
         }
     }
 
@@ -342,7 +616,8 @@ public class ConnectionsActivity extends Activity {
         wrap.setPadding(dp(14), dp(4), dp(14), dp(4));
         LinearLayout c = new LinearLayout(this);
         c.setGravity(Gravity.CENTER_VERTICAL);
-        c.setBackground(rr(CARD, 18, LINE));
+        c.setBackground(rr(CARD, 18, rowAccent != 0 ? rowAccent : LINE));
+        rowAccent = 0;
         c.setPadding(dp(14), dp(12), dp(14), dp(12));
         if (ic != null) {
             ImageView iv = new ImageView(this);
@@ -381,164 +656,27 @@ public class ConnectionsActivity extends Activity {
         long now = System.currentTimeMillis();
         String ver = c.raddr.indexOf(':') >= 0 ? "IPv6" : "IPv4";
         long sec = Math.max(1, (c.last - c.first) / 1000);
-        return "UYGULAMA\n" + (imp ? "-" : label(c.uid) + "\n" + pkg(c.uid))
-                + "\n\nSİTE ADI (SNI/DNS)\n" + (c.name != null ? c.name : "-")
-                + (Trackers.is(c) ? "\n\n⚑ Reklam/izleyici alan adı listesinde" : "") + "\n\nPROTOKOL\n" + proto(c.proto) + " · " + ver
-                + "\n\nADRESLER\nYerel  " + c.laddr + ":" + c.lport + "\nUzak   " + c.raddr + ":" + c.rport
-                + "\n\nTRAFİK\nGiden  " + c.pOut + " paket · " + fmt(c.bOut)
-                + "\nGelen  " + c.pIn + " paket · " + fmt(c.bIn)
-                + "\nToplam " + fmt(c.bOut + c.bIn) + "\nHız    " + fmt((c.bOut + c.bIn) / sec) + "/sn"
-                + "\n\nZAMAN\nİlk    " + clock(c.first) + "\nSon    " + clock(c.last) + "\nSüre   " + dur(c.last - c.first)
-                + "\nDurum  " + (imp ? "Dosyadan" : now - c.last < 3000 ? "Aktif" : "Boşta");
-    }
-
-    void buildFilters() {
-        srcRow.removeAllViews();
-        filtRow.removeAllViews();
-        put(srcRow, chip("Canlı", !imp, 9, v -> { imp = false; buildFilters(); go(LIST); }));
-        put(srcRow, chip("Dosya", imp, 9, v -> { imp = true; selUid = ALL; buildFilters(); go(APP); }));
-        put(srcRow, chip("DNS", false, 9, v -> go(DNSL)));
-        put(srcRow, chip("Rapor", false, 9, v -> go(REP)));
-        if (lvl == APP && !imp && selUid != ALL) put(srcRow, chip("PCAP", false, 9, v -> exportApp()));
-        for (int i = 0; i < FN.length; i++) {
-            final int k = i;
-            put(filtRow, chip(FN[i], filter == i, 9, v -> { filter = k; buildFilters(); refresh(); }));
-        }
-    }
-
-    void buildDetActions() {
-        detActions.removeAllViews();
-        if (selConn == null) return;
-        if (lvl == CONN) {
-            int n = selConn.snapshot().size();
-            put(detActions, chip("Paketleri gör (son " + n + ")", true, 13, v -> go(PKTS)));
-            if (selConn.proto == 6) put(detActions, chip("Konuşma", false, 13, v -> go(FLOW)));
-            if (!imp) put(detActions, chip("PCAP aktar", false, 13, v -> exportKeys(PacketStats.keysOf(Collections.singletonList(selConn)), "baglanti")));
-        } else if (lvl == PKT) {
-            put(detActions, chip("Ayrıntı", pktMode == 0, 13, v -> { pktMode = 0; buildDetActions(); refresh(); }));
-            put(detActions, chip("Hex", pktMode == 1, 13, v -> { pktMode = 1; buildDetActions(); refresh(); }));
-        }
-    }
-
-    void go(int l) {
-        lvl = l;
-        tab = 0;
-        buildFilters();
-        buildDetActions();
-        refresh();
-    }
-
-    LinearLayout toggle(String title, String desc, final String key, final boolean def, final Runnable after) {
-        final boolean on = sp.getBoolean(key, def);
-        LinearLayout c = card();
-        c.setOrientation(LinearLayout.HORIZONTAL);
-        c.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.VERTICAL);
-        TextView b = tv(desc, 13, DIM);
-        b.setPadding(0, dp(3), dp(10), 0);
-        l.addView(bold(title, 16, Color.WHITE));
-        l.addView(b);
-        c.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView ch = chip(on ? "Açık" : "Kapalı", on, 11, v -> {
-            sp.edit().putBoolean(key, !on).apply();
-            if (after != null) after.run();
-            buildSettings();
-        });
-        ch.setPadding(dp(16), dp(11), dp(16), dp(11));
-        c.addView(ch);
-        return c;
-    }
-
-    TextView btn(String t, boolean primary, View.OnClickListener l) {
-        TextView b = bold(t, 15, primary ? Color.BLACK : Color.WHITE);
-        b.setGravity(Gravity.CENTER);
-        b.setBackground(primary ? rr(Color.WHITE, 26, 0) : rr(Color.BLACK, 26, 0xFF444444));
-        b.setPadding(0, dp(14), 0, dp(14));
-        b.setOnClickListener(l);
-        return b;
-    }
-
-    void exportKeys(Set<String> keys, String tag) {
-        if (PacketStats.pcapPkts == 0) {
-            Toast.makeText(this, "Kayıtlı paket yok. PCAP kaydı açık olmalı.", Toast.LENGTH_LONG).show();
-            return;
-        }
-        pendKeys = keys;
-        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("application/vnd.tcpdump.pcap");
-        i.putExtra(Intent.EXTRA_TITLE, "vaxoscope-" + tag + "-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".pcap");
-        startActivityForResult(i, 3);
-    }
-
-    void exportApp() {
-        exportKeys(PacketStats.keysOf(conns), label(selUid).replaceAll("[^A-Za-z0-9]", ""));
-    }
-
-    void pickApps() {
-        new Thread(() -> {
-            PackageManager pm = getPackageManager();
-            Intent li = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
-            List<android.content.pm.ResolveInfo> ri = pm.queryIntentActivities(li, 0);
-            final List<String[]> items = new ArrayList<>();
-            HashSet<String> seen = new HashSet<>();
-            for (android.content.pm.ResolveInfo r : ri) {
-                String p = r.activityInfo.packageName;
-                if (p.equals(getPackageName()) || !seen.add(p)) continue;
-                items.add(new String[]{r.loadLabel(pm).toString(), p});
-            }
-            Collections.sort(items, (a, b) -> a[0].compareToIgnoreCase(b[0]));
-            runOnUiThread(() -> showPicker(items));
-        }).start();
-    }
-
-    void showPicker(final List<String[]> items) {
-        final Set<String> cur = sp.getStringSet("apps", null);
-        final String[] names = new String[items.size()];
-        final boolean[] chk = new boolean[items.size()];
-        for (int i = 0; i < names.length; i++) {
-            names[i] = items.get(i)[0];
-            chk[i] = cur != null && cur.contains(items.get(i)[1]);
-        }
-        new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("İzlenecek uygulamalar")
-                .setMultiChoiceItems(names, chk, (dlg, which, on) -> chk[which] = on)
-                .setPositiveButton("Kaydet", (dlg, w) -> {
-                    HashSet<String> res = new HashSet<>();
-                    for (int i = 0; i < chk.length; i++) if (chk[i]) res.add(items.get(i)[1]);
-                    sp.edit().putStringSet("apps", res).apply();
-                    buildSettings();
-                })
-                .setNeutralButton("Hepsini izle", (dlg, w) -> { sp.edit().remove("apps").apply(); buildSettings(); })
-                .setNegativeButton("İptal", null)
-                .show();
-    }
-
-    void shareLog() {
-        try {
-            File f = new File(getFilesDir(), "vaxodpi.log");
-            String t = "";
-            if (f.exists()) {
-                long len = f.length();
-                byte[] bb = new byte[(int) Math.min(len, 60000)];
-                try (FileInputStream in = new FileInputStream(f)) {
-                    in.skip(Math.max(0, len - bb.length));
-                    int n = in.read(bb);
-                    t = new String(bb, 0, Math.max(n, 0), "UTF-8");
-                }
-            }
-            if (t.length() == 0) {
-                Toast.makeText(this, "Log boş. Log kaydını aç ve bağlan.", Toast.LENGTH_LONG).show();
-                return;
-            }
-            Intent i = new Intent(Intent.ACTION_SEND);
-            i.setType("text/plain");
-            i.putExtra(Intent.EXTRA_TEXT, "VaxoScope log\n" + t);
-            startActivity(Intent.createChooser(i, "Logu paylaş"));
-        } catch (Throwable e) {
-            Toast.makeText(this, "Log okunamadı", Toast.LENGTH_SHORT).show();
-        }
+        String st = imp ? t("Dosyadan", "From file", "Из файла")
+                : c.blocked ? t("Engellendi", "Blocked", "Заблокировано")
+                : now - c.last < 3000 ? t("Aktif", "Active", "Активно") : t("Boşta", "Idle", "Простой");
+        return t("UYGULAMA", "APP", "ПРИЛОЖЕНИЕ") + "\n" + (imp ? "-" : label(c.uid) + "\n" + pkg(c.uid))
+                + "\n\n" + t("SİTE ADI (SNI/DNS)", "HOST (SNI/DNS)", "ХОСТ (SNI/DNS)") + "\n"
+                + (c.name != null ? c.name : c.guess != null ? "≈ " + c.guess : "-")
+                + (Trackers.is(c) ? "\n⚑ " + t("Reklam/izleyici listesinde", "On the ad/tracker list", "В списке рекламы/трекеров") : "")
+                + "\n\n" + t("PROTOKOL", "PROTOCOL", "ПРОТОКОЛ") + "\n" + proto(c.proto) + " · " + ver
+                + "\n\n" + t("ADRESLER", "ADDRESSES", "АДРЕСА")
+                + "\n" + t("Yerel ", "Local  ", "Локал.") + " " + c.laddr + ":" + c.lport
+                + "\n" + t("Uzak  ", "Remote ", "Удал. ") + " " + c.raddr + ":" + c.rport
+                + "\n\n" + t("TRAFİK", "TRAFFIC", "ТРАФИК")
+                + "\n" + t("Giden ", "Out   ", "Исх.  ") + " " + c.pOut + " " + t("paket", "pkts", "пак.") + " · " + fmt(c.bOut)
+                + "\n" + t("Gelen ", "In    ", "Вх.   ") + " " + c.pIn + " " + t("paket", "pkts", "пак.") + " · " + fmt(c.bIn)
+                + "\n" + t("Toplam", "Total ", "Всего ") + " " + fmt(c.bOut + c.bIn)
+                + "\n" + t("Hız   ", "Speed ", "Скор. ") + " " + fmt((c.bOut + c.bIn) / sec) + "/" + t("sn", "s", "с")
+                + "\n\n" + t("ZAMAN", "TIME", "ВРЕМЯ")
+                + "\n" + t("İlk   ", "First ", "Первый") + " " + clock(c.first)
+                + "\n" + t("Son   ", "Last  ", "Послед") + " " + clock(c.last)
+                + "\n" + t("Süre  ", "Span  ", "Длит. ") + " " + dur(c.last - c.first)
+                + "\n" + t("Durum ", "State ", "Статус") + " " + st;
     }
 
     static long u32(byte[] b, int i) {
@@ -549,8 +687,10 @@ public class ConnectionsActivity extends Activity {
         List<PacketStats.Pkt> l = c.snapshot();
         StringBuilder s = new StringBuilder();
         s.append(c.laddr).append(":").append(c.lport).append("  ⇄  ").append(c.raddr).append(":").append(c.rport)
-         .append("\nSon ").append(l.size()).append(" paket · seq/ack göreli\n→ giden   ← gelen\n\n");
-        if (l.isEmpty()) return s.append("Tutulan paket yok.").toString();
+         .append("\n").append(t("Son ", "Last ", "Последние ")).append(l.size())
+         .append(t(" paket · seq/ack göreli", " packets · relative seq/ack", " пакетов · отн. seq/ack"))
+         .append("\n→ ").append(t("giden", "out", "исх.")).append("   ← ").append(t("gelen", "in", "вх.")).append("\n\n");
+        if (l.isEmpty()) return s.append(t("Tutulan paket yok.", "No stored packets.", "Нет сохранённых пакетов.")).toString();
         long t0 = l.get(0).t;
         long[] base = {-1, -1};
         String[] fn = {"FIN", "SYN", "RST", "PSH", "ACK", "URG"};
@@ -586,30 +726,14 @@ public class ConnectionsActivity extends Activity {
         return s.toString();
     }
 
-    String pkgLabel(String pk) {
-        if (pk.equals("?")) return "Bilinmeyen";
-        if (pk.startsWith("uid:")) {
-            try { return label(Integer.parseInt(pk.substring(4))); } catch (Throwable e) { return pk; }
-        }
-        try {
-            PackageManager pm = getPackageManager();
-            return pm.getApplicationLabel(pm.getApplicationInfo(pk, 0)).toString();
-        } catch (Throwable e) { return pk; }
-    }
-
-    Drawable pkgIcon(String pk) {
-        try { return getPackageManager().getApplicationIcon(pk); }
-        catch (Throwable e) { return getPackageManager().getDefaultActivityIcon(); }
-    }
-
     String dayLabel(String day) {
         SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd", Locale.US);
-        String t = f.format(new Date());
+        String today = f.format(new Date());
         Calendar c = Calendar.getInstance();
         c.add(Calendar.DAY_OF_YEAR, -1);
         String y = f.format(c.getTime());
-        if (day.equals(t)) return "Bugün";
-        if (day.equals(y)) return "Dün";
+        if (day.equals(today)) return t("Bugün", "Today", "Сегодня");
+        if (day.equals(y)) return t("Dün", "Yesterday", "Вчера");
         return day.substring(6) + "." + day.substring(4, 6) + "." + day.substring(0, 4);
     }
 
@@ -641,62 +765,238 @@ public class ConnectionsActivity extends Activity {
         }
     }
 
+    // ---------- üst düğmeler ----------
+    void buildFilters() {
+        srcRow.removeAllViews();
+        filtRow.removeAllViews();
+        put(srcRow, chip(t("Canlı", "Live", "Живой"), !imp, 9, v -> { imp = false; buildFilters(); go(LIST); }));
+        put(srcRow, chip(t("Dosya", "File", "Файл"), imp, 9, v -> { imp = true; selUid = ALL; buildFilters(); go(APP); }));
+        put(srcRow, chip("DNS", false, 9, v -> go(DNSL)));
+        put(srcRow, chip(t("Rapor", "Report", "Отчёт"), false, 9, v -> go(REP)));
+        String[] fn = {t("Tümü", "All", "Все"), "TCP", "UDP", "DNS", "TLS"};
+        for (int i = 0; i < fn.length; i++) {
+            final int k = i;
+            put(filtRow, chip(fn[i], filter == i, 9, v -> { filter = k; buildFilters(); refresh(); }));
+        }
+    }
+
+    void buildAppRow() {
+        appRow.removeAllViews();
+        if (lvl != APP || imp || selUid == ALL) return;
+        final String pk = pkg(selUid);
+        boolean bl = PacketStats.BLK_UID.contains(selUid);
+        put(appRow, chip("PCAP", false, 9, v -> exportApp()));
+        put(appRow, chip(bl ? t("Engeli kaldır", "Unblock", "Разблокировать") : "⛔ " + t("Engelle", "Block", "Блок"), bl, 9, v -> toggleBlockApp(pk)));
+    }
+
+    void buildDetActions() {
+        detActions.removeAllViews();
+        detActions2.removeAllViews();
+        if (selConn == null) return;
+        if (lvl == CONN) {
+            int n = selConn.snapshot().size();
+            put(detActions, chip(t("Paketler", "Packets", "Пакеты") + " (" + n + ")", true, 13, v -> go(PKTS)));
+            if (selConn.proto == 6) put(detActions, chip(t("Konuşma", "Conversation", "Диалог"), false, 13, v -> go(FLOW)));
+            if (!imp) {
+                put(detActions2, chip(t("PCAP aktar", "Export PCAP", "Экспорт PCAP"), false, 13,
+                        v -> exportKeys(PacketStats.keysOf(Collections.singletonList(selConn)), "conn")));
+                String host = selConn.name != null ? selConn.name : selConn.guess;
+                if (host != null) {
+                    final String hh = host;
+                    boolean bl = hostIsBlocked(hh);
+                    put(detActions2, chip(bl ? t("Engeli kaldır", "Unblock", "Разблокировать")
+                            : "⛔ " + t("Siteyi engelle", "Block host", "Блок хоста"), bl, 13, v -> toggleBlockHost(hh)));
+                }
+            }
+        } else if (lvl == PKT) {
+            put(detActions, chip(t("Ayrıntı", "Details", "Детали"), pktMode == 0, 13, v -> { pktMode = 0; buildDetActions(); refresh(); }));
+            put(detActions, chip("Hex", pktMode == 1, 13, v -> { pktMode = 1; buildDetActions(); refresh(); }));
+        }
+    }
+
+    void go(int l) {
+        lvl = l;
+        tab = 0;
+        buildFilters();
+        buildAppRow();
+        buildDetActions();
+        refresh();
+    }
+
+    void setLang(int k) {
+        lang = k;
+        PacketStats.lang = k;
+        sp.edit().putInt("lang", k).apply();
+        applyLang();
+    }
+
+    void applyLang() {
+        btnList.setText(t("Liste", "List", "Список"));
+        btnSet.setText(t("Ayarlar", "Settings", "Настройки"));
+        search.setHint(t("Ara: tiktok, tcp port 443, app chrome, >1mb", "Search: tiktok, tcp port 443, app chrome, >1mb", "Поиск: tiktok, tcp port 443, app chrome, >1mb"));
+        buildFilters();
+        buildAppRow();
+        buildDetActions();
+        if (tab == 1) buildSettings();
+        refresh();
+    }
+
+    // ---------- ayarlar ----------
+    LinearLayout toggle(String title, String desc, final String key, boolean def, final Runnable after) {
+        final boolean on = sp.getBoolean(key, def);
+        LinearLayout c = card();
+        c.setOrientation(LinearLayout.HORIZONTAL);
+        c.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        TextView b = tv(desc, 13, DIM);
+        b.setPadding(0, dp(3), dp(10), 0);
+        l.addView(bold(title, 16, Color.WHITE));
+        l.addView(b);
+        c.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView ch = chip(on ? t("Açık", "On", "Вкл") : t("Kapalı", "Off", "Выкл"), on, 11, v -> {
+            sp.edit().putBoolean(key, !on).apply();
+            if (after != null) after.run();
+            buildSettings();
+        });
+        ch.setPadding(dp(16), dp(11), dp(16), dp(11));
+        c.addView(ch);
+        return c;
+    }
+
+    LinearLayout info(String title, String body) {
+        LinearLayout c = card();
+        c.addView(bold(title, 16, Color.WHITE));
+        TextView b = tv(body, 13, DIM);
+        b.setPadding(0, dp(6), 0, 0);
+        b.setLineSpacing(0, 1.1f);
+        c.addView(b);
+        return c;
+    }
+
     void buildSettings() {
         setBox.removeAllViews();
-        setBox.addView(toggle("PCAP kaydı", "Ham paketler capture.pcap dosyasına yazılır (en çok 64 MB).\n" + PacketStats.pcapInfo(),
+
+        LinearLayout cl = card();
+        cl.addView(bold(t("Dil", "Language", "Язык"), 16, Color.WHITE));
+        LinearLayout lr = new LinearLayout(this);
+        lr.setPadding(0, dp(12), 0, 0);
+        String[] ln = {"Türkçe", "English", "Русский"};
+        for (int k = 0; k < 3; k++) {
+            final int kk = k;
+            put(lr, chip(ln[k], lang == k, 12, v -> setLang(kk)));
+        }
+        cl.addView(lr);
+        setBox.addView(cl, lp(12));
+
+        setBox.addView(toggle(t("PCAP kaydı", "PCAP recording", "Запись PCAP"),
+                t("Ham paketler capture.pcap dosyasına yazılır (en çok 64 MB).", "Raw packets are written to capture.pcap (max 64 MB).", "Сырые пакеты пишутся в capture.pcap (до 64 МБ).")
+                        + "\n" + PacketStats.pcapInfo(),
                 "cap_on", true, () -> PacketStats.pcapOn = sp.getBoolean("cap_on", true)), lp(12));
+
         LinearLayout c2 = card();
-        c2.addView(bold("PCAP dosyaları", 16, Color.WHITE));
-        TextView t2 = tv("Dışa aktar: Wireshark'ta açılır. İçe aktar: eski kaydı çevrimdışı incele.", 13, DIM);
+        c2.addView(bold(t("PCAP dosyaları", "PCAP files", "Файлы PCAP"), 16, Color.WHITE));
+        TextView t2 = tv(t("Dışa aktar: Wireshark'ta açılır. İçe aktar: .pcap ve .pcapng dosyalarını çevrimdışı incele.",
+                "Export opens in Wireshark. Import lets you inspect .pcap and .pcapng files offline.",
+                "Экспорт открывается в Wireshark. Импорт — просмотр файлов .pcap и .pcapng офлайн."), 13, DIM);
         t2.setPadding(0, dp(3), 0, dp(12));
         c2.addView(t2);
-        c2.addView(btn("PCAP dışa aktar", true, v -> exportPcap()));
+        c2.addView(btn(t("PCAP dışa aktar", "Export PCAP", "Экспорт PCAP"), true, v -> exportPcap()));
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, -2);
         bp.setMargins(0, dp(10), 0, 0);
-        c2.addView(btn("PCAP içe aktar", false, v -> importPcap()), bp);
+        c2.addView(btn(t("PCAP içe aktar", "Import PCAP", "Импорт PCAP"), false, v -> importPcap()), bp);
         setBox.addView(c2, lp(12));
-        LinearLayout ca = card();
+
+        int nb = sp.getStringSet("blk_apps", new HashSet<String>()).size() + sp.getStringSet("blk_hosts", new HashSet<String>()).size();
+        LinearLayout cf = info(t("Güvenlik duvarı", "Firewall", "Брандмауэр"),
+                t("Listeden bir uygulamayı ya da bağlantı ayrıntısından bir siteyi engelleyebilirsin. Engellenen trafik internete çıkmaz. Yalnızca VPN açıkken çalışır.",
+                  "Block an app from the list or a host from connection details. Blocked traffic never leaves the phone. Works only while the VPN is on.",
+                  "Блокируйте приложение из списка или хост из деталей соединения. Заблокированный трафик не выходит в сеть. Работает только при включённом VPN."));
+        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-1, -2);
+        fp.setMargins(0, dp(12), 0, 0);
+        cf.addView(btn(t("Engelli liste", "Blocked list", "Список блокировок") + " (" + nb + ")", false, v -> manageBlocks()), fp);
+        setBox.addView(cf, lp(12));
+
+        setBox.addView(toggle(t("İzleyici uyarısı", "Tracker alert", "Уведомление о трекерах"),
+                t("Reklam/izleyici alan adına ilk temasta bildirim gönderir.", "Notifies on first contact with an ad/tracker domain.", "Уведомляет при первом обращении к рекламному/трекерному домену."),
+                "alert_trk", false, null), lp(12));
+
         java.util.Set<String> selA = sp.getStringSet("apps", null);
         int na = selA == null ? 0 : selA.size();
-        ca.addView(bold("İzlenecek uygulamalar", 16, Color.WHITE));
-        TextView ta = tv(na == 0 ? "Şu an: tüm uygulamalar. Seçersen yalnızca onların trafiği yakalanır. Değişiklik bir sonraki bağlantıda geçerli olur." : "Şu an: " + na + " uygulama seçili. Değişiklik bir sonraki bağlantıda geçerli olur.", 13, DIM);
-        ta.setPadding(0, dp(3), 0, dp(12));
-        ca.addView(ta);
-        ca.addView(btn("Uygulama seç", false, v -> pickApps()));
+        LinearLayout ca = info(t("İzlenecek uygulamalar", "Apps to monitor", "Отслеживаемые приложения"),
+                (na == 0 ? t("Şu an: tüm uygulamalar.", "Now: all apps.", "Сейчас: все приложения.")
+                         : t("Şu an: ", "Now: ", "Сейчас: ") + na + t(" uygulama seçili.", " apps selected.", " приложений выбрано."))
+                        + "\n" + t("Değişiklik bir sonraki bağlantıda geçerli olur.", "Changes apply on the next connection.", "Изменения вступят в силу при следующем подключении."));
+        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
+        ap.setMargins(0, dp(12), 0, 0);
+        ca.addView(btn(t("Uygulama seç", "Choose apps", "Выбрать приложения"), false, v -> pickApps()), ap);
         setBox.addView(ca, lp(12));
-        setBox.addView(toggle("Yalnızca aktif bağlantılar", "Son 5 saniyede trafiği olanları göster.", "only_active", false, null), lp(12));
-        setBox.addView(toggle("Log kaydı", "Hata ayıklama olaylarını dosyaya yazar.", "log_on", false, null), lp(12));
-        setBox.addView(btn("Logu paylaş", false, v -> shareLog()), lp(8));
+
+        setBox.addView(toggle(t("Yalnızca aktif bağlantılar", "Active connections only", "Только активные соединения"),
+                t("Son 5 saniyede trafiği olanları göster.", "Show only those with traffic in the last 5 seconds.", "Показывать только с трафиком за последние 5 секунд."),
+                "only_active", false, null), lp(12));
+        setBox.addView(toggle(t("Log kaydı", "Logging", "Журнал"),
+                t("Hata ayıklama olaylarını dosyaya yazar.", "Writes debug events to a file.", "Пишет отладочные события в файл."),
+                "log_on", false, null), lp(12));
+        setBox.addView(btn(t("Logu paylaş", "Share log", "Поделиться логом"), false, v -> shareLog()), lp(8));
 
         LinearLayout c3 = card();
-        c3.addView(bold("DNS sunucusu", 16, Color.WHITE));
-        TextView t3 = tv("Değişiklik bir sonraki bağlantıda geçerli olur.", 13, DIM);
+        c3.addView(bold(t("DNS sunucusu", "DNS server", "DNS-сервер"), 16, Color.WHITE));
+        TextView t3 = tv(t("Değişiklik bir sonraki bağlantıda geçerli olur.", "Changes apply on the next connection.", "Изменения вступят в силу при следующем подключении."), 13, DIM);
         t3.setPadding(0, dp(3), 0, dp(12));
         c3.addView(t3);
         String[] dn = {"Cloudflare", "Google", "Quad9", "AdGuard"};
         int cur = sp.getInt("dns", 0);
         for (int r = 0; r < 2; r++) {
-            LinearLayout row = new LinearLayout(this);
-            row.setPadding(0, r == 0 ? 0 : dp(8), 0, 0);
+            LinearLayout rw = new LinearLayout(this);
+            rw.setPadding(0, r == 0 ? 0 : dp(8), 0, 0);
             for (int k = r * 2; k < r * 2 + 2; k++) {
                 final int kk = k;
-                put(row, chip(dn[k], cur == k, 12, v -> { sp.edit().putInt("dns", kk).apply(); buildSettings(); }));
+                put(rw, chip(dn[k], cur == k, 12, v -> { sp.edit().putInt("dns", kk).apply(); buildSettings(); }));
             }
-            c3.addView(row);
+            c3.addView(rw);
         }
         setBox.addView(c3, lp(12));
 
-        LinearLayout c4 = card();
-        c4.addView(bold("Gizlilik", 16, Color.WHITE));
-        TextView pv = tv("VaxoScope yalnızca bu telefonun kendi trafiğini izler. Veri telefondan çıkmaz, internete hiçbir şey gönderilmez. HTTPS içeriği okunmaz; yalnızca site adı, adres, port ve bayt sayıları görünür.\n\nPrivate DNS açıksa DNS sorguları şifreli gider ve bazı adlar eksik kalır.", 13, DIM);
-        pv.setPadding(0, dp(6), 0, 0);
-        c4.addView(pv);
-        setBox.addView(c4, lp(12));
+        LinearLayout cb = info(t("Yedekleme", "Backup", "Резервная копия"),
+                t("Ayarlar, engeller ve günlük raporlar tek dosyaya kaydedilir.", "Settings, blocks and daily reports are saved to a single file.", "Настройки, блокировки и отчёты сохраняются в один файл."));
+        LinearLayout br = new LinearLayout(this);
+        br.setPadding(0, dp(12), 0, 0);
+        put(br, chip(t("Yedekle", "Back up", "Сохранить"), true, 13, v -> {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("application/json");
+            i.putExtra(Intent.EXTRA_TITLE, "vaxoscope-backup-" + new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date()) + ".json");
+            startActivityForResult(i, 5);
+        }));
+        put(br, chip(t("Geri yükle", "Restore", "Восстановить"), false, 13, v -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            startActivityForResult(i, 6);
+        }));
+        cb.addView(br);
+        setBox.addView(cb, lp(12));
 
-        setBox.addView(btn("Listeyi ve kaydı temizle", false, v -> {
+        setBox.addView(info(t("Renk anlamları", "Color legend", "Цвета"),
+                t("Kırmızı: RST / bağlantı hatası\nYeşil: TLS (şifreli web)\nMavi: DNS\nTuruncu: engellendi\n⚑ reklam/izleyici",
+                  "Red: RST / connection error\nGreen: TLS (encrypted web)\nBlue: DNS\nOrange: blocked\n⚑ ad/tracker",
+                  "Красный: RST / ошибка соединения\nЗелёный: TLS (шифрованный веб)\nСиний: DNS\nОранжевый: заблокировано\n⚑ реклама/трекер")), lp(12));
+
+        setBox.addView(info(t("Hızlı ayar kutucuğu", "Quick settings tile", "Плитка быстрых настроек"),
+                t("Bildirim panelini aç, kalem simgesine bas ve 'VaxoScope' kutucuğunu ekle. Oradan tek dokunuşla aç/durdur yapabilirsin.",
+                  "Open the notification panel, tap the pencil icon and add the 'VaxoScope' tile. You can then start/stop with one tap.",
+                  "Откройте шторку, нажмите значок карандаша и добавьте плитку «VaxoScope». Затем запуск/остановка одним касанием.")), lp(12));
+
+        setBox.addView(info(t("Gizlilik", "Privacy", "Конфиденциальность"),
+                t("VaxoScope yalnızca bu telefonun kendi trafiğini izler. Veri telefondan çıkmaz, internete hiçbir şey gönderilmez. HTTPS içeriği okunmaz; yalnızca site adı, adres, port ve bayt sayıları görünür.\n\nPrivate DNS açıksa DNS sorguları şifreli gider ve bazı adlar eksik kalır.",
+                  "VaxoScope only watches this phone's own traffic. Nothing leaves the phone and nothing is sent to the internet. HTTPS content is not read; only host names, addresses, ports and byte counts are visible.\n\nIf Private DNS is on, DNS queries are encrypted and some names will be missing.",
+                  "VaxoScope следит только за трафиком этого телефона. Данные не покидают телефон, ничего не отправляется в интернет. Содержимое HTTPS не читается; видны только имена хостов, адреса, порты и объём.\n\nЕсли включён Private DNS, DNS-запросы шифруются и часть имён будет недоступна.")), lp(12));
+
+        setBox.addView(btn(t("Listeyi ve kaydı temizle", "Clear list and recording", "Очистить список и запись"), false, v -> {
             PacketStats.clearAll();
             PacketStats.IMPORT.clear();
-            Toast.makeText(this, "Temizlendi", Toast.LENGTH_SHORT).show();
+            toast(t("Temizlendi", "Cleared", "Очищено"));
             buildSettings();
         }), lp(12));
         if (crash.length() > 0) {
@@ -711,10 +1011,10 @@ public class ConnectionsActivity extends Activity {
     void refresh() {
         long now = System.currentTimeMillis();
         boolean run = running(), pend = !run && now < pendingUntil;
-        btnGo.setText(run ? "Durdur" : pend ? "Bağlanıyor…" : "Aç");
+        btnGo.setText(run ? t("Durdur", "Stop", "Стоп") : pend ? t("Bağlanıyor…", "Connecting…", "Подключение…") : t("Aç", "Start", "Старт"));
         btnGo.setTextColor(run ? Color.WHITE : Color.BLACK);
         btnGo.setBackground(run ? rr(Color.BLACK, 24, Color.WHITE) : rr(Color.WHITE, 24, 0));
-        status.setText(run ? "● Açık" : pend ? "● Bağlanıyor" : "○ Kapalı");
+        status.setText(run ? t("● Açık", "● On", "● Вкл") : pend ? t("● Bağlanıyor", "● Connecting", "● Подключение") : t("○ Kapalı", "○ Off", "○ Выкл"));
         status.setTextColor(run ? Color.WHITE : OFF);
         btnList.setTextColor(tab == 0 ? Color.WHITE : OFF);
         btnSet.setTextColor(tab == 1 ? Color.WHITE : OFF);
@@ -734,9 +1034,31 @@ public class ConnectionsActivity extends Activity {
         detSv.setVisibility(det ? View.VISIBLE : View.GONE);
         setSv.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
         topBox.setVisibility(lvl <= APP ? View.VISIBLE : View.GONE);
+        appRow.setVisibility(lvl == APP && !imp && selUid != ALL ? View.VISIBLE : View.GONE);
         graph.setVisibility(imp ? View.GONE : View.VISIBLE);
         gtxt.setVisibility(imp ? View.GONE : View.VISIBLE);
-        if (tab == 1) { sub.setText("Ayarlar"); return; }
+        if (tab == 1) { sub.setText(t("Ayarlar", "Settings", "Настройки")); return; }
+
+        if (lvl == REP) {
+            buildReport();
+            sub.setText("‹  " + t("Kullanım raporu · son günler", "Usage report · recent days", "Отчёт об использовании · последние дни"));
+            empty.setText(t("Henüz kayıtlı kullanım yok.\nVPN açıkken trafik oluştur.", "No recorded usage yet.\nGenerate some traffic with the VPN on.", "Пока нет данных.\nСоздайте трафик при включённом VPN."));
+            ad.notifyDataSetChanged();
+            return;
+        }
+        if (lvl == DNSL) {
+            dnsRows.clear();
+            List<PacketStats.Dns> dl = PacketStats.dnsSnapshot();
+            Collections.reverse(dl);
+            for (PacketStats.Dns e : dl) {
+                if (query.length() > 0 && !e.name.toLowerCase(Locale.ROOT).contains(query)) continue;
+                dnsRows.add(e);
+            }
+            sub.setText("‹  " + t("DNS geçmişi · ", "DNS history · ", "История DNS · ") + dnsRows.size() + t(" sorgu", " queries", " запросов"));
+            empty.setText(t("Henüz DNS sorgusu yok.\nPrivate DNS açıksa sorgular şifreli gider.", "No DNS queries yet.\nWith Private DNS on, queries are encrypted.", "Пока нет DNS-запросов.\nПри включённом Private DNS запросы шифруются."));
+            ad.notifyDataSetChanged();
+            return;
+        }
 
         Map<String, PacketStats.Conn> tbl = imp ? PacketStats.IMPORT : PacketStats.TABLE;
         boolean onlyAct = !imp && sp.getBoolean("only_active", false);
@@ -750,7 +1072,8 @@ public class ConnectionsActivity extends Activity {
             int u = c.uid < 0 ? -1 : c.uid;
             long[] a = m.get(u);
             if (a == null) { a = new long[5]; m.put(u, a); }
-            a[0]++; a[1] += c.bOut; a[2] += c.bIn; if (Trackers.is(c)) a[4]++;
+            a[0]++; a[1] += c.bOut; a[2] += c.bIn;
+            if (Trackers.is(c)) a[4]++;
             if (c.last > a[3]) a[3] = c.last;
             if (lvl == APP && (selUid == ALL || u == selUid)) conns.add(c);
         }
@@ -761,54 +1084,37 @@ public class ConnectionsActivity extends Activity {
             return Long.compare(b[1] + b[2], a[1] + a[2]);
         });
         Collections.sort(conns, (a, b) -> Long.compare(b.first, a.first));
+        if (conns.size() > 300) conns.subList(300, conns.size()).clear();
         maxBytes = 1;
         if (lvl == LIST && !apps.isEmpty()) { long[] a = (long[]) apps.get(0)[1]; maxBytes = Math.max(1, a[1] + a[2]); }
         for (PacketStats.Conn c : conns) maxBytes = Math.max(maxBytes, c.bOut + c.bIn);
 
-        if (lvl == REP) {
-            buildReport();
-            sub.setText("‹  Kullanım raporu · son günler");
-            empty.setText("Henüz kayıtlı kullanım yok.\nVPN açıkken trafik oluştur.");
-            ad.notifyDataSetChanged();
-            return;
-        }
-        if (lvl == DNSL) {
-            dnsRows.clear();
-            List<PacketStats.Dns> dl = PacketStats.dnsSnapshot();
-            Collections.reverse(dl);
-            for (PacketStats.Dns e : dl) {
-            if (query.length() > 0 && !e.name.toLowerCase(Locale.ROOT).contains(query)) continue;
-                dnsRows.add(e);
-            }
-            sub.setText("‹  DNS geçmişi · " + dnsRows.size() + " sorgu");
-            empty.setText("Henüz DNS sorgusu yok.\nPrivate DNS açıksa sorgular şifreli gider.");
-            ad.notifyDataSetChanged();
-            return;
-        }
         String back = lvl > minLvl() ? "‹  " : "";
         if (lvl == LIST) {
-            sub.setText("Uygulamalar · " + apps.size() + "   ↑" + fmt(up) + " ↓" + fmt(dn));
-            empty.setText("Henüz trafik yok.\nAşağıdan Aç'a bas.");
+            sub.setText(t("Uygulamalar · ", "Apps · ", "Приложения · ") + apps.size() + "   ↑" + fmt(up) + " ↓" + fmt(dn));
+            empty.setText(t("Henüz trafik yok.\nAşağıdan Aç'a bas.", "No traffic yet.\nTap Start below.", "Трафика пока нет.\nНажмите «Старт» внизу."));
         } else if (lvl == APP) {
-            sub.setText(back + (imp ? "Dosya" : label(selUid)) + " · " + conns.size() + " bağlantı");
-            empty.setText(imp ? "Dosya boş ya da filtreye uyan yok.\nAyarlar'dan PCAP içe aktar." : "Bu filtreye uyan bağlantı yok.");
+            sub.setText(back + (imp ? t("Dosya", "File", "Файл") : label(selUid)) + " · " + conns.size() + t(" bağlantı", " connections", " соединений"));
+            empty.setText(imp ? t("Dosya boş ya da filtreye uyan yok.\nAyarlar'dan PCAP içe aktar.", "File is empty or nothing matches.\nImport a PCAP from Settings.", "Файл пуст или нет совпадений.\nИмпортируйте PCAP в настройках.")
+                    : t("Bu filtreye uyan bağlantı yok.", "No connections match this filter.", "Нет соединений под этот фильтр."));
         } else if (selConn != null && lvl == CONN) {
             sub.setText(back + dest(selConn));
             detail.setTextSize(13);
             detail.setText(detailText(selConn));
         } else if (selConn != null && lvl == FLOW) {
-            sub.setText(back + "Konuşma · " + dest(selConn));
+            sub.setText(back + t("Konuşma · ", "Conversation · ", "Диалог · ") + dest(selConn));
             detail.setTextSize(11);
             detail.setText(flowText(selConn));
         } else if (selConn != null && lvl == PKTS) {
             pkts.clear();
             pkts.addAll(selConn.snapshot());
-            sub.setText(back + "Paketler · " + dest(selConn));
-            empty.setText("Bu bağlantı için tutulan paket yok.");
+            sub.setText(back + t("Paketler · ", "Packets · ", "Пакеты · ") + dest(selConn));
+            empty.setText(t("Bu bağlantı için tutulan paket yok.", "No stored packets for this connection.", "Для этого соединения нет сохранённых пакетов."));
         } else if (selPkt != null && lvl == PKT) {
-            sub.setText(back + "Paket #" + selNum);
-            String hdr = "#" + selNum + "  " + (selPkt.out ? "↑ giden" : "↓ gelen") + "  " + TF.format(new Date(selPkt.t))
-                    + "\n" + selPkt.orig + " B (yakalanan " + selPkt.data.length + " B)\n\n";
+            sub.setText(back + t("Paket #", "Packet #", "Пакет #") + selNum);
+            String hdr = "#" + selNum + "  " + (selPkt.out ? t("↑ giden", "↑ outgoing", "↑ исходящий") : t("↓ gelen", "↓ incoming", "↓ входящий"))
+                    + "  " + TF.format(new Date(selPkt.t)) + "\n" + selPkt.orig + " B ("
+                    + t("yakalanan ", "captured ", "захвачено ") + selPkt.data.length + " B)\n\n";
             if (pktMode == 0) { detail.setTextSize(12); detail.setText(hdr + PacketStats.decode(selPkt)[1]); }
             else { detail.setTextSize(11); detail.setText(hdr + PacketStats.hexdump(selPkt.data)); }
         }
@@ -818,7 +1124,7 @@ public class ConnectionsActivity extends Activity {
     final Runnable tick = new Runnable() {
         @Override public void run() {
             try { refresh(); } catch (Throwable ignored) { }
-            h.postDelayed(this, 1000);
+            h.postDelayed(this, 1500);
         }
     };
 
@@ -832,7 +1138,7 @@ public class ConnectionsActivity extends Activity {
                 FileInputStream in = new FileInputStream(cf);
                 int n = in.read(bb);
                 in.close();
-                crash = "ÖNCEKİ ÇÖKME\n" + new String(bb, 0, Math.max(n, 0));
+                crash = "CRASH\n" + new String(bb, 0, Math.max(n, 0));
                 cf.delete();
             }
         } catch (Throwable ignored) { }
@@ -852,6 +1158,7 @@ public class ConnectionsActivity extends Activity {
             getWindow().setNavigationBarColor(Color.BLACK);
         } catch (Throwable ignored) { }
         PacketStats.init(this);
+        lang = PacketStats.lang;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -862,7 +1169,7 @@ public class ConnectionsActivity extends Activity {
         brandRow.setGravity(Gravity.CENTER_VERTICAL);
         brandRow.setPadding(dp(20), dp(8), dp(20), 0);
         TextView brand = bold("VaxoScope", 28, Color.WHITE);
-        status = tv("○ Kapalı", 13, OFF);
+        status = tv("○", 13, OFF);
         brandRow.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
         brandRow.addView(status);
         root.addView(brandRow);
@@ -876,7 +1183,6 @@ public class ConnectionsActivity extends Activity {
 
         FrameLayout pages = new FrameLayout(this);
 
-        // liste sayfası
         listPage = new LinearLayout(this);
         listPage.setOrientation(LinearLayout.VERTICAL);
         topBox = new LinearLayout(this);
@@ -890,7 +1196,6 @@ public class ConnectionsActivity extends Activity {
         gc.addView(graph, new LinearLayout.LayoutParams(-1, dp(64)));
         topBox.addView(gc, lp(0));
         search = new EditText(this);
-        search.setHint("Ara: tiktok, tcp port 443, app chrome, >1mb");
         search.setHintTextColor(OFF);
         search.setTextColor(Color.WHITE);
         search.setTextSize(14);
@@ -898,8 +1203,8 @@ public class ConnectionsActivity extends Activity {
         search.setBackground(rr(CARD, 22, LINE));
         search.setPadding(dp(18), dp(12), dp(18), dp(12));
         search.addTextChangedListener(new android.text.TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence x, int a, int b, int c) { }
-            @Override public void onTextChanged(CharSequence x, int a, int b, int c) { }
+            @Override public void beforeTextChanged(CharSequence x, int a, int bb, int c) { }
+            @Override public void onTextChanged(CharSequence x, int a, int bb, int c) { }
             @Override public void afterTextChanged(android.text.Editable e) {
                 query = e.toString().trim().toLowerCase(Locale.ROOT);
                 refresh();
@@ -911,10 +1216,15 @@ public class ConnectionsActivity extends Activity {
         topBox.addView(srcRow, new LinearLayout.LayoutParams(-1, -2));
         ((LinearLayout.LayoutParams) srcRow.getLayoutParams()).topMargin = dp(10);
         filtRow = new LinearLayout(this);
-        filtRow.setPadding(dp(11), 0, dp(11), dp(6));
+        filtRow.setPadding(dp(11), 0, dp(11), 0);
         topBox.addView(filtRow, new LinearLayout.LayoutParams(-1, -2));
         ((LinearLayout.LayoutParams) filtRow.getLayoutParams()).topMargin = dp(8);
+        appRow = new LinearLayout(this);
+        appRow.setPadding(dp(11), 0, dp(11), dp(6));
+        topBox.addView(appRow, new LinearLayout.LayoutParams(-1, -2));
+        ((LinearLayout.LayoutParams) appRow.getLayoutParams()).topMargin = dp(8);
         listPage.addView(topBox);
+
         FrameLayout lf = new FrameLayout(this);
         lv = new ListView(this);
         lv.setDividerHeight(0);
@@ -922,42 +1232,52 @@ public class ConnectionsActivity extends Activity {
         lv.setSelector(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         lv.setVerticalScrollBarEnabled(false);
         ad = new BaseAdapter() {
-            @Override public int getCount() { return lvl == LIST ? apps.size() : lvl == APP ? conns.size() : lvl == PKTS ? pkts.size() : lvl == DNSL ? dnsRows.size() : lvl == REP ? repRows.size() : 0; }
+            @Override public int getCount() {
+                return lvl == LIST ? apps.size() : lvl == APP ? conns.size() : lvl == PKTS ? pkts.size()
+                        : lvl == DNSL ? dnsRows.size() : lvl == REP ? repRows.size() : 0;
+            }
             @Override public Object getItem(int i) { return null; }
             @Override public long getItemId(int i) { return i; }
             @Override public View getView(int i, View v, ViewGroup p) {
+                if (lvl == REP) {
+                    Object[] o = repRows.get(i);
+                    String dt = o[4] + t(" bağlantı", " connections", " соед.") + " · ↑" + fmt((Long) o[2]) + " ↓" + fmt((Long) o[3]);
+                    String tot = fmt((Long) o[2] + (Long) o[3]);
+                    if (o[0].equals("H")) return row(null, "" + o[1], dt, tot, -1f);
+                    String pk = "" + o[1];
+                    return row(pkgIcon(pk), pkgLabel(pk), dt, tot, -1f);
+                }
                 if (lvl == DNSL) {
                     PacketStats.Dns e = dnsRows.get(i);
                     String ap = e.conn != null && e.conn.uid >= 0 ? label(e.conn.uid) : "?";
-                    String ty = e.qtype == 1 ? "A" : e.qtype == 28 ? "AAAA" : e.qtype == 65 ? "HTTPS" : e.qtype == 5 ? "CNAME" : "tür " + e.qtype;
-                    String rt = e.rcode < 0 ? "…" : e.rcode == 0 ? (e.ans.length() == 0 ? "boş" : "✓") : "hata " + e.rcode;
+                    String ty = e.qtype == 1 ? "A" : e.qtype == 28 ? "AAAA" : e.qtype == 65 ? "HTTPS" : e.qtype == 5 ? "CNAME" : "type " + e.qtype;
+                    String rt = e.rcode < 0 ? "…" : e.rcode == 0 ? (e.ans.length() == 0 ? t("boş", "empty", "пусто") : "✓") : t("hata ", "err ", "ошибка ") + e.rcode;
+                    if (e.rcode > 0) rowAccent = RED;
                     return row(null, e.name, TF.format(new Date(e.t)) + " · " + ap + " · " + ty + (e.ans.length() > 0 ? " → " + e.ans : ""), rt, -1f);
-                }
-                if (lvl == REP) {
-                    Object[] o = repRows.get(i);
-                    String det = o[4] + " bağlantı · ↑" + fmt((Long) o[2]) + " ↓" + fmt((Long) o[3]);
-                    String tot = fmt((Long) o[2] + (Long) o[3]);
-                    if (o[0].equals("H")) return row(null, "" + o[1], det, tot, -1f);
-                    String pk = "" + o[1];
-                    return row(pkgIcon(pk), pkgLabel(pk), det, tot, -1f);
                 }
                 if (lvl == LIST) {
                     Object[] o = apps.get(i);
                     int u = (Integer) o[0];
                     long[] a = (long[]) o[1];
                     String dot = System.currentTimeMillis() - a[3] < 3000 ? "● " : "";
-                    return row(icon(u), dot + label(u), a[0] + " bağlantı" + (a[4] > 0 ? " · ⚑" + a[4] : "") + " · ↑" + fmt(a[1]) + " ↓" + fmt(a[2]),
+                    boolean bl = PacketStats.BLK_UID.contains(u);
+                    if (bl) rowAccent = ORG;
+                    return row(icon(u), (bl ? "⛔ " : "") + dot + label(u),
+                            a[0] + t(" bağlantı", " connections", " соед.") + (a[4] > 0 ? " · ⚑" + a[4] : "") + " · ↑" + fmt(a[1]) + " ↓" + fmt(a[2]),
                             fmt(a[1] + a[2]), (float) (a[1] + a[2]) / maxBytes);
                 }
                 if (lvl == APP) {
                     PacketStats.Conn c = conns.get(i);
-                    return row(null, (Trackers.is(c) ? "⚑ " : "") + dest(c), proto(c.proto) + " · " + c.raddr + ":" + c.rport + " · ↑" + fmt(c.bOut) + " ↓" + fmt(c.bIn),
+                    rowAccent = accentOf(c);
+                    return row(null, (c.blocked ? "⛔ " : "") + (Trackers.is(c) ? "⚑ " : "") + dest(c),
+                            proto(c.proto) + " · " + c.raddr + ":" + c.rport + " · ↑" + fmt(c.bOut) + " ↓" + fmt(c.bIn),
                             fmt(c.bOut + c.bIn), (float) (c.bOut + c.bIn) / maxBytes);
                 }
                 PacketStats.Pkt k = pkts.get(i);
+                String[] dc = PacketStats.decode(k);
+                rowAccent = pktAccent(dc[0]);
                 long num = selConn.pOut + selConn.pIn - pkts.size() + i + 1;
-                return row(null, "#" + num + "  " + (k.out ? "↑ " : "↓ ") + PacketStats.decode(k)[0],
-                        TF.format(new Date(k.t)), k.orig + " B", -1f);
+                return row(null, "#" + num + "  " + (k.out ? "↑ " : "↓ ") + dc[0], TF.format(new Date(k.t)), k.orig + " B", -1f);
             }
         };
         lv.setAdapter(ad);
@@ -981,7 +1301,6 @@ public class ConnectionsActivity extends Activity {
         listPage.addView(lf, new LinearLayout.LayoutParams(-1, 0, 1f));
         pages.addView(listPage);
 
-        // ayrıntı sayfası
         detSv = new ScrollView(this);
         detSv.setVerticalScrollBarEnabled(false);
         LinearLayout dbox = new LinearLayout(this);
@@ -989,6 +1308,9 @@ public class ConnectionsActivity extends Activity {
         detActions = new LinearLayout(this);
         detActions.setPadding(dp(11), 0, dp(11), 0);
         dbox.addView(detActions, new LinearLayout.LayoutParams(-1, -2));
+        detActions2 = new LinearLayout(this);
+        detActions2.setPadding(dp(11), dp(8), dp(11), 0);
+        dbox.addView(detActions2, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout dcard = card();
         detail = tv("", 13, Color.WHITE);
         detail.setTypeface(Typeface.MONOSPACE);
@@ -999,7 +1321,6 @@ public class ConnectionsActivity extends Activity {
         detSv.addView(dbox);
         pages.addView(detSv);
 
-        // ayarlar sayfası
         setSv = new ScrollView(this);
         setSv.setVerticalScrollBarEnabled(false);
         setBox = new LinearLayout(this);
@@ -1013,9 +1334,9 @@ public class ConnectionsActivity extends Activity {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setBackground(rr(0xFF0E0E0E, 34, 0xFF242424));
         bar.setPadding(dp(10), dp(10), dp(10), dp(10));
-        btnList = bold("Liste", 15, Color.WHITE);
-        btnSet = bold("Ayarlar", 15, OFF);
-        btnGo = bold("Aç", 16, Color.BLACK);
+        btnList = bold("", 15, Color.WHITE);
+        btnSet = bold("", 15, OFF);
+        btnGo = bold("", 16, Color.BLACK);
         btnList.setGravity(Gravity.CENTER);
         btnSet.setGravity(Gravity.CENTER);
         btnGo.setGravity(Gravity.CENTER);
@@ -1035,8 +1356,7 @@ public class ConnectionsActivity extends Activity {
         root.addView(bar, bp);
 
         setContentView(root);
-        buildFilters();
-        refresh();
+        applyLang();
     }
 
     @Override public void onBackPressed() {
