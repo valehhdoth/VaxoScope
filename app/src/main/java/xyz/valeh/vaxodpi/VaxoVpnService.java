@@ -14,7 +14,7 @@ import java.io.InputStream;
 
 public final class VaxoVpnService extends VpnService {
 
-    private static final String TAG = "VaxoDPI";
+    private static final String TAG = "VaxoScope";
     public static final String ACTION_STOP =
             "xyz.valeh.vaxodpi.STOP";
     public static final String ACTION_STATUS =
@@ -128,7 +128,7 @@ public final class VaxoVpnService extends VpnService {
         flog("DNS: " + dnsList[di]);
 
         // VPN'in kendi SOCKS5 bağlantılarının tünele dönmesini önle.
-        // Bunun sonucu olarak VaxoDPI uygulamasının kendi trafiği
+        // Bunun sonucu olarak VaxoScope uygulamasının kendi trafiği
         // bu VPN'in dışında kalır.
         try {
             java.util.Set<String> sel = getSharedPreferences("vaxodpi", MODE_PRIVATE)
@@ -224,7 +224,7 @@ public final class VaxoVpnService extends VpnService {
                 getSystemService(NOTIFICATION_SERVICE);
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(new android.app.NotificationChannel(
-                    CHANNEL_ID, "VaxoDPI",
+                    CHANNEL_ID, "VaxoScope",
                     android.app.NotificationManager.IMPORTANCE_LOW));
         }
         int fl = android.app.PendingIntent.FLAG_UPDATE_CURRENT
@@ -392,7 +392,7 @@ public final class VaxoVpnService extends VpnService {
                 } catch (Throwable ignored) {
                 }
             }
-        }, "VaxoDPI-Notif");
+        }, "VaxoScope-Notif");
         notifThread = t;
         t.start();
     }

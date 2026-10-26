@@ -17,7 +17,7 @@ import java.net.Socket;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** VaxoDPI'nin kendi SOCKS5 + DPI atlatma motoru. */
+/** VaxoScope'nin kendi SOCKS5 + DPI atlatma motoru. */
 final class VaxoProxy {
     public static volatile java.io.File dbgLog;
     static int dbgCnt;
