@@ -1,19 +1,45 @@
 package xyz.valeh.vaxodpi;
 
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 final class PacketStats {
+    static final int CAP = 512, KEEP = 40;
+
+    static final class Pkt { long t; boolean out; int orig; byte[] data; }
+
     static final class Conn {
         int proto, lport, rport;
         String laddr, raddr;
         long pOut, bOut, pIn, bIn, first, last;
         volatile String name;
         volatile int uid = -2;
+        final ArrayDeque<Pkt> pkts = new ArrayDeque<>();
+        List<Pkt> snapshot() { synchronized (pkts) { return new ArrayList<>(pkts); } }
     }
 
     static final ConcurrentHashMap<String, Conn> TABLE = new ConcurrentHashMap<>();
+    static final ConcurrentHashMap<String, Conn> IMPORT = new ConcurrentHashMap<>();
     static volatile String lastName = "-";
-    static volatile long lastPkt;
+    static volatile long lastPkt, totIn, totOut, pcapPkts;
+    static volatile boolean pcapOn = true;
+    static volatile File dir;
+
+    private static final Object LK = new Object();
+    private static OutputStream pw;
+    private static File pf;
+    private static long pcapBytes, lastFlush;
+    private static volatile android.net.ConnectivityManager cm;
+    private static final java.util.concurrent.ExecutorService EX =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    static void init(android.content.Context x) {
+        cm = (android.net.ConnectivityManager) x.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+        dir = x.getFilesDir();
+        pcapOn = x.getSharedPreferences("vaxodpi", 0).getBoolean("cap_on", true);
+    }
 
     static String summary() {
         int named = 0;
@@ -21,12 +47,171 @@ final class PacketStats {
         return "bag=" + TABLE.size() + " ad=" + named + " son=" + lastName;
     }
 
-    private static volatile android.net.ConnectivityManager cm;
-    private static final java.util.concurrent.ExecutorService EX =
-            java.util.concurrent.Executors.newSingleThreadExecutor();
+    static String pcapInfo() {
+        long sz = 0;
+        synchronized (LK) { sz = pcapBytes; }
+        return pcapPkts + " paket · " + (sz < 1048576 ? (sz / 1024) + " KB" : String.format(Locale.US, "%.1f MB", sz / 1048576.0));
+    }
 
-    static void init(android.content.Context x) {
-        cm = (android.net.ConnectivityManager) x.getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+    static void clearAll() {
+        TABLE.clear();
+        synchronized (LK) {
+            closePcap();
+            if (pf != null) pf.delete();
+            pcapPkts = 0;
+            pcapBytes = 0;
+        }
+    }
+
+    // ---------- PCAP yazma ----------
+    private static void le32(OutputStream o, long v) throws IOException {
+        o.write((int) (v & 255)); o.write((int) ((v >> 8) & 255));
+        o.write((int) ((v >> 16) & 255)); o.write((int) ((v >> 24) & 255));
+    }
+
+    private static void le16(OutputStream o, int v) throws IOException {
+        o.write(v & 255); o.write((v >> 8) & 255);
+    }
+
+    private static void closePcap() {
+        try { if (pw != null) pw.close(); } catch (Throwable ignored) { }
+        pw = null;
+    }
+
+    private static void openPcap() throws IOException {
+        closePcap();
+        pf = new File(dir, "capture.pcap");
+        pw = new BufferedOutputStream(new FileOutputStream(pf, false), 65536);
+        le32(pw, 0xa1b2c3d4L); le16(pw, 2); le16(pw, 4);
+        le32(pw, 0); le32(pw, 0); le32(pw, 65535); le32(pw, 101);
+        pcapBytes = 24;
+        pcapPkts = 0;
+    }
+
+    private static void writePcap(byte[] b, int n, long t) {
+        if (!pcapOn || dir == null) return;
+        synchronized (LK) {
+            try {
+                if (pw == null || pcapBytes > 64L * 1024 * 1024) openPcap();
+                le32(pw, t / 1000); le32(pw, (t % 1000) * 1000); le32(pw, n); le32(pw, n);
+                pw.write(b, 0, n);
+                pcapBytes += 16 + n;
+                pcapPkts++;
+                if (t - lastFlush > 1000) { pw.flush(); lastFlush = t; }
+            } catch (Throwable e) {
+                closePcap();
+            }
+        }
+    }
+
+    static long exportTo(OutputStream out) throws IOException {
+        long len;
+        synchronized (LK) {
+            if (pw == null) return -1;
+            pw.flush();
+            len = pcapBytes;
+        }
+        File f = new File(dir, "capture.pcap");
+        if (!f.exists() || len <= 24) return -1;
+        long n = 0;
+        try (InputStream in = new FileInputStream(f)) {
+            byte[] buf = new byte[65536];
+            int r;
+            while (n < len && (r = in.read(buf, 0, (int) Math.min(buf.length, len - n))) > 0) {
+                out.write(buf, 0, r);
+                n += r;
+            }
+        }
+        out.flush();
+        return n;
+    }
+
+    // ---------- PCAP okuma ----------
+    private static long rd32(byte[] b, int i, boolean le) {
+        if (le) return (b[i] & 255L) | ((b[i + 1] & 255L) << 8) | ((b[i + 2] & 255L) << 16) | ((b[i + 3] & 255L) << 24);
+        return (b[i + 3] & 255L) | ((b[i + 2] & 255L) << 8) | ((b[i + 1] & 255L) << 16) | ((b[i] & 255L) << 24);
+    }
+
+    /** Paket sayısı döner. -1: pcap değil, -2: bağlantı türü desteklenmiyor, -3: pcapng. */
+    static int importFrom(InputStream in0) throws IOException {
+        DataInputStream in = new DataInputStream(new BufferedInputStream(in0, 65536));
+        byte[] gh = new byte[24];
+        in.readFully(gh);
+        long m = rd32(gh, 0, false);
+        boolean le, nano = false;
+        if (m == 0xa1b2c3d4L) le = false;
+        else if (m == 0xd4c3b2a1L) le = true;
+        else if (m == 0xa1b23c4dL) { le = false; nano = true; }
+        else if (m == 0x4d3cb2a1L) { le = true; nano = true; }
+        else if (m == 0x0a0d0d0aL) return -3;
+        else return -1;
+        int link = (int) rd32(gh, 20, le), skip;
+        switch (link) {
+            case 1: skip = 14; break;
+            case 0: skip = 4; break;
+            case 113: skip = 16; break;
+            case 101: case 12: case 14: skip = 0; break;
+            default: return -2;
+        }
+        IMPORT.clear();
+        byte[] ph = new byte[16];
+        int cnt = 0;
+        while (true) {
+            try { in.readFully(ph); } catch (EOFException e) { break; }
+            long sec = rd32(ph, 0, le), sub = rd32(ph, 4, le);
+            int incl = (int) rd32(ph, 8, le), orig = (int) rd32(ph, 12, le);
+            if (incl < 0 || incl > 262144) break;
+            byte[] d = new byte[incl];
+            try { in.readFully(d); } catch (EOFException e) { break; }
+            long t = sec * 1000 + (nano ? sub / 1000000 : sub / 1000);
+            int off = skip;
+            if (link == 1 && incl >= 14) {
+                int et = ((d[12] & 255) << 8) | (d[13] & 255);
+                if (et == 0x8100 && incl >= 18) { off = 18; et = ((d[16] & 255) << 8) | (d[17] & 255); }
+                if (et != 0x0800 && et != 0x86dd) continue;
+            }
+            int len = incl - off;
+            if (len < 20) continue;
+            byte[] ip = off == 0 ? d : Arrays.copyOfRange(d, off, incl);
+            try {
+                parse(IMPORT, guessOut(ip, len), ip, len, Math.max(len, orig - off), t, false);
+                cnt++;
+            } catch (Throwable ignored) { }
+        }
+        return cnt;
+    }
+
+    private static boolean local(String a) {
+        if (a.startsWith("10.") || a.startsWith("192.168.") || a.startsWith("198.18.") || a.startsWith("127.")
+                || a.startsWith("fe80") || a.startsWith("fc") || a.startsWith("fd")) return true;
+        if (a.startsWith("172.")) {
+            try {
+                int s = Integer.parseInt(a.substring(4, a.indexOf('.', 4)));
+                return s >= 16 && s <= 31;
+            } catch (Throwable ignored) { }
+        }
+        return false;
+    }
+
+    private static boolean guessOut(byte[] b, int n) {
+        int v = (b[0] >> 4) & 15;
+        String sa, da;
+        if (v == 4) { sa = a4(b, 12); da = a4(b, 16); }
+        else if (v == 6 && n >= 40) { sa = a6(b, 8); da = a6(b, 24); }
+        else return true;
+        boolean la = local(sa), lb = local(da);
+        return la != lb ? la : sa.compareTo(da) <= 0;
+    }
+
+    // ---------- Canlı paket ----------
+    static void onPacket(boolean out, byte[] b, int n) {
+        try {
+            long t = System.currentTimeMillis();
+            lastPkt = t;
+            if (out) totOut += n; else totIn += n;
+            writePcap(b, n, t);
+            parse(TABLE, out, b, n, n, t, true);
+        } catch (Throwable ignored) { }
     }
 
     private static void resolve(final Conn c) {
@@ -45,8 +230,10 @@ final class PacketStats {
         });
     }
 
-    private static int u16(byte[] b, int i) {
-        return ((b[i] & 255) << 8) | (b[i + 1] & 255);
+    private static int u16(byte[] b, int i) { return ((b[i] & 255) << 8) | (b[i + 1] & 255); }
+
+    private static long u32(byte[] b, int i) {
+        return ((b[i] & 255L) << 24) | ((b[i + 1] & 255L) << 16) | ((b[i + 2] & 255L) << 8) | (b[i + 3] & 255L);
     }
 
     private static String a4(byte[] b, int i) {
@@ -62,66 +249,48 @@ final class PacketStats {
         return s.toString();
     }
 
-    static void onPacket(boolean out, byte[] b, int n) {
-        try {
-            parse(out, b, n);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private static void parse(boolean out, byte[] b, int n) {
+    private static void parse(Map<String, Conn> tbl, boolean out, byte[] b, int n, int orig, long t, boolean live) {
         if (n < 20) return;
-        int v = (b[0] >> 4) & 15;
-        int ip, pr;
+        int v = (b[0] >> 4) & 15, ip, pr;
         String sa, da;
         if (v == 4) {
-            ip = (b[0] & 15) * 4;
-            pr = b[9] & 255;
-            sa = a4(b, 12);
-            da = a4(b, 16);
+            ip = (b[0] & 15) * 4; pr = b[9] & 255; sa = a4(b, 12); da = a4(b, 16);
         } else if (v == 6) {
             if (n < 44) return;
-            ip = 40;
-            pr = b[6] & 255;
-            sa = a6(b, 8);
-            da = a6(b, 24);
-        } else {
-            return;
-        }
+            ip = 40; pr = b[6] & 255; sa = a6(b, 8); da = a6(b, 24);
+        } else return;
         int sp = 0, dp = 0;
-        if ((pr == 6 || pr == 17) && n >= ip + 4) {
-            sp = u16(b, ip);
-            dp = u16(b, ip + 2);
-        }
-        String key = out
-                ? pr + "|" + sa + ":" + sp + ">" + da + ":" + dp
-                : pr + "|" + da + ":" + dp + ">" + sa + ":" + sp;
-        Conn c = TABLE.get(key);
-        long now = System.currentTimeMillis();
+        if ((pr == 6 || pr == 17) && n >= ip + 4) { sp = u16(b, ip); dp = u16(b, ip + 2); }
+        String key = out ? pr + "|" + sa + ":" + sp + ">" + da + ":" + dp
+                         : pr + "|" + da + ":" + dp + ">" + sa + ":" + sp;
+        Conn c = tbl.get(key);
         if (c == null) {
             c = new Conn();
             c.proto = pr;
-            c.laddr = out ? sa : da;
-            c.lport = out ? sp : dp;
-            c.raddr = out ? da : sa;
-            c.rport = out ? dp : sp;
-            c.first = now;
-            TABLE.put(key, c);
-            if (out && (pr == 6 || pr == 17)) resolve(c);
+            c.laddr = out ? sa : da; c.lport = out ? sp : dp;
+            c.raddr = out ? da : sa; c.rport = out ? dp : sp;
+            c.first = t;
+            tbl.put(key, c);
+            if (live && out && (pr == 6 || pr == 17)) resolve(c);
         }
-        c.last = now;
-        lastPkt = now;
-        if (out) { c.pOut++; c.bOut += n; } else { c.pIn++; c.bIn += n; }
-
+        c.last = t;
+        if (out) { c.pOut++; c.bOut += orig; } else { c.pIn++; c.bIn += orig; }
+        Pkt p = new Pkt();
+        p.t = t; p.out = out; p.orig = orig;
+        p.data = Arrays.copyOf(b, Math.min(n, CAP));
+        synchronized (c.pkts) {
+            c.pkts.addLast(p);
+            if (c.pkts.size() > KEEP) c.pkts.removeFirst();
+        }
         if (!out || c.name != null) return;
         if (pr == 17 && dp == 53 && n > ip + 8 + 12) {
             String d = dns(b, ip + 8 + 12, n);
-            if (d != null) { c.name = d; lastName = d; }
+            if (d != null) { c.name = d; if (live) lastName = d; }
         } else if (pr == 6 && n >= ip + 20) {
             int off = ip + ((b[ip + 12] >> 4) & 15) * 4;
             if (n > off + 44 && (b[off] & 255) == 0x16) {
                 String s = sni(b, off, n);
-                if (s != null) { c.name = s; lastName = s; }
+                if (s != null) { c.name = s; if (live) lastName = s; }
             }
         }
     }
@@ -156,13 +325,140 @@ final class PacketStats {
             p += 4;
             if (t == 0) {
                 if (p + 5 > end) return null;
-                int nl = u16(b, p + 3);
-                int st = p + 5;
+                int nl = u16(b, p + 3), st = p + 5;
                 if (st + nl > n) return null;
-                return new String(b, st, nl, java.nio.charset.StandardCharsets.US_ASCII);
+                return new String(b, st, nl, StandardCharsets.US_ASCII);
             }
             p += l;
         }
         return null;
+    }
+
+    // ---------- Paket ayrıntısı ve hex ----------
+    private static String pn(int p) {
+        switch (p) {
+            case 1: return "ICMP"; case 2: return "IGMP"; case 6: return "TCP"; case 17: return "UDP";
+            case 47: return "GRE"; case 50: return "ESP"; case 58: return "ICMPv6"; default: return "IP/" + p;
+        }
+    }
+
+    private static String flags(int f) {
+        String[] nm = {"FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR"};
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < 8; i++) if ((f & (1 << i)) != 0) { if (s.length() > 0) s.append(','); s.append(nm[i]); }
+        return s.length() > 0 ? s.toString() : "-";
+    }
+
+    /** {kısa özet, ayrıntılı metin} */
+    static String[] decode(Pkt p) {
+        byte[] b = p.data;
+        int n = b.length;
+        StringBuilder s = new StringBuilder();
+        String br = "Paket";
+        try {
+            int v = (b[0] >> 4) & 15, ip, pr;
+            String sa, da;
+            if (v == 4) {
+                ip = (b[0] & 15) * 4; pr = b[9] & 255; sa = a4(b, 12); da = a4(b, 16);
+                s.append("IPv4\n  Başlık      ").append(ip).append(" B\n  Toplam      ").append(u16(b, 2))
+                 .append(" B\n  Tanıtıcı    0x").append(Integer.toHexString(u16(b, 4)))
+                 .append("\n  Bayrak      ").append((b[6] & 0x40) != 0 ? "DF " : "").append((b[6] & 0x20) != 0 ? "MF" : "")
+                 .append("\n  TTL         ").append(b[8] & 255)
+                 .append("\n  Protokol    ").append(pr).append(" (").append(pn(pr)).append(")")
+                 .append("\n  Sağlama     0x").append(Integer.toHexString(u16(b, 10)));
+            } else if (v == 6) {
+                ip = 40; pr = b[6] & 255; sa = a6(b, 8); da = a6(b, 24);
+                s.append("IPv6\n  Yük         ").append(u16(b, 4)).append(" B\n  Sonraki     ").append(pr)
+                 .append(" (").append(pn(pr)).append(")\n  Hop limit   ").append(b[7] & 255);
+            } else return new String[]{"?", "Tanınmayan paket (sürüm " + v + ")"};
+            s.append("\n  Kaynak      ").append(sa).append("\n  Hedef       ").append(da).append("\n\n");
+            br = pn(pr) + " " + sa + "→" + da;
+            if (pr == 6 && n >= ip + 20) {
+                int sp = u16(b, ip), dp = u16(b, ip + 2), off = ((b[ip + 12] >> 4) & 15) * 4, fl = b[ip + 13] & 255;
+                int pay = Math.max(0, p.orig - ip - off), ao = ip + off;
+                String f = flags(fl);
+                s.append("TCP\n  Kaynak port ").append(sp).append("\n  Hedef port  ").append(dp)
+                 .append("\n  Seq         ").append(u32(b, ip + 4)).append("\n  Ack         ").append(u32(b, ip + 8))
+                 .append("\n  Başlık      ").append(off).append(" B\n  Bayraklar   ").append(f)
+                 .append("\n  Pencere     ").append(u16(b, ip + 14))
+                 .append("\n  Sağlama     0x").append(Integer.toHexString(u16(b, ip + 16)))
+                 .append("\n  Yük         ").append(pay).append(" B\n");
+                br = "TCP " + sp + "→" + dp + " [" + f + "] " + pay + " B";
+                if (pay > 5 && n > ao + 5) {
+                    int rt = b[ao] & 255;
+                    String rn = rt == 0x16 ? "Handshake" : rt == 0x17 ? "Uygulama verisi (şifreli)" : rt == 0x15 ? "Uyarı" : rt == 0x14 ? "ChangeCipherSpec" : null;
+                    if (rn != null && (b[ao + 1] & 255) == 3) {
+                        s.append("\nTLS\n  Kayıt       ").append(rn).append('\n');
+                        if (rt == 0x16) {
+                            int ht = b[ao + 5] & 255;
+                            String hn = ht == 1 ? "ClientHello" : ht == 2 ? "ServerHello" : ht == 11 ? "Certificate"
+                                    : ht == 4 ? "NewSessionTicket" : ht == 20 ? "Finished" : "tür " + ht;
+                            s.append("  Handshake   ").append(hn).append('\n');
+                            br += " TLS " + hn;
+                            String sn = n > ao + 44 ? sni(b, ao, n) : null;
+                            if (sn != null) { s.append("  SNI         ").append(sn).append('\n'); br += " " + sn; }
+                        } else br += " TLS";
+                    } else if (n > ao + 8) {
+                        String h = new String(b, ao, Math.min(8, n - ao), StandardCharsets.US_ASCII);
+                        if (h.startsWith("GET ") || h.startsWith("POST ") || h.startsWith("HEAD ") || h.startsWith("PUT ") || h.startsWith("HTTP/")) {
+                            int e = ao;
+                            while (e < n && b[e] != '\r' && b[e] != '\n') e++;
+                            String line = new String(b, ao, e - ao, StandardCharsets.US_ASCII);
+                            s.append("\nHTTP\n  ").append(line).append('\n');
+                            br += " " + line;
+                        }
+                    }
+                }
+            } else if (pr == 17 && n >= ip + 8) {
+                int sp = u16(b, ip), dp = u16(b, ip + 2);
+                int pay = Math.max(0, p.orig - ip - 8);
+                s.append("UDP\n  Kaynak port ").append(sp).append("\n  Hedef port  ").append(dp)
+                 .append("\n  Uzunluk     ").append(u16(b, ip + 4))
+                 .append("\n  Sağlama     0x").append(Integer.toHexString(u16(b, ip + 6)))
+                 .append("\n  Yük         ").append(pay).append(" B\n");
+                br = "UDP " + sp + "→" + dp + " " + pay + " B";
+                if ((sp == 53 || dp == 53) && n >= ip + 8 + 12) {
+                    int fl = u16(b, ip + 10);
+                    boolean resp = (fl & 0x8000) != 0;
+                    String q = dns(b, ip + 8 + 12, n);
+                    s.append("\nDNS\n  Tür         ").append(resp ? "Yanıt" : "Sorgu")
+                     .append("\n  Soru        ").append(u16(b, ip + 12)).append("\n  Yanıt       ").append(u16(b, ip + 14));
+                    if (resp) s.append("\n  Rcode       ").append(fl & 15);
+                    if (q != null) s.append("\n  Ad          ").append(q);
+                    s.append('\n');
+                    br = "DNS " + (resp ? "yanıt " : "sorgu ") + (q != null ? q : "");
+                } else if (sp == 443 || dp == 443) {
+                    s.append("\nQUIC / HTTP3 olabilir, içerik şifreli.\n");
+                    br += " QUIC?";
+                }
+            } else if ((pr == 1 || pr == 58) && n >= ip + 4) {
+                s.append(pn(pr)).append("\n  Tip         ").append(b[ip] & 255).append("\n  Kod         ").append(b[ip + 1] & 255).append('\n');
+                br = pn(pr) + " tip " + (b[ip] & 255) + " " + sa + "→" + da;
+            }
+        } catch (Throwable e) {
+            s.append("\n(ayrıştırma hatası)");
+        }
+        return new String[]{br, s.toString()};
+    }
+
+    static String hexdump(byte[] d) {
+        final String H = "0123456789abcdef";
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < d.length; i += 8) {
+            s.append(String.format(Locale.US, "%04x  ", i));
+            for (int j = 0; j < 8; j++) {
+                if (i + j < d.length) {
+                    int x = d[i + j] & 255;
+                    s.append(H.charAt(x >> 4)).append(H.charAt(x & 15)).append(' ');
+                } else s.append("   ");
+            }
+            s.append(' ');
+            for (int j = 0; j < 8 && i + j < d.length; j++) {
+                int x = d[i + j] & 255;
+                s.append(x >= 32 && x < 127 ? (char) x : '.');
+            }
+            s.append('\n');
+        }
+        return s.toString();
     }
 }
