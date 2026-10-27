@@ -262,6 +262,16 @@ public class ConnectionsActivity extends Activity {
                 else if (w.equals("app")) { if (imp || !label(c.uid).toLowerCase(Locale.ROOT).contains(a)) return false; }
                 else { if (!dest(c).toLowerCase(Locale.ROOT).contains(a)) return false; }
             }
+            else if ((w.equals("country") || w.equals("ulke") || w.equals("ülke") || w.equals("страна")) && i + 1 < tk.length) {
+                String a = tk[++i];
+                String[] o = IpInfo.lookup(c.raddr);
+                if (o == null || !o[0].equalsIgnoreCase(a)) return false;
+            }
+            else if ((w.equals("org") || w.equals("asn")) && i + 1 < tk.length) {
+                String a = tk[++i];
+                String[] o = IpInfo.lookup(c.raddr);
+                if (o == null || !(o[2].toLowerCase(Locale.ROOT).contains(a) || ("as" + o[1]).equals(a))) return false;
+            }
             else if (w.startsWith(">") && w.length() > 1) { if (c.bOut + c.bIn < parseSize(w.substring(1))) return false; }
             else if (!hay.contains(w)) return false;
         }
@@ -271,7 +281,7 @@ public class ConnectionsActivity extends Activity {
     boolean match(PacketStats.Conn c) {
         if (query.length() > 0) {
             String hay = ((imp ? "" : label(c.uid)) + " " + dest(c) + " " + c.raddr + ":" + c.rport + " "
-                    + proto(c.proto)).toLowerCase(Locale.ROOT);
+                    + proto(c.proto) + " " + ownerText(c)).toLowerCase(Locale.ROOT);
             if (!qmatch(c, hay)) return false;
         }
         switch (filter) {
@@ -663,6 +673,7 @@ public class ConnectionsActivity extends Activity {
                 + "\n\n" + t("SİTE ADI (SNI/DNS)", "HOST (SNI/DNS)", "ХОСТ (SNI/DNS)") + "\n"
                 + (c.name != null ? c.name : c.guess != null ? "≈ " + c.guess : "-")
                 + (Trackers.is(c) ? "\n⚑ " + t("Reklam/izleyici listesinde", "On the ad/tracker list", "В списке рекламы/трекеров") : "")
+                + (ownerText(c).length() > 0 ? "\n\n" + t("SAHİBİ (IP)", "OWNER (IP)", "ВЛАДЕЛЕЦ (IP)") + "\n" + ownerText(c) : "")
                 + "\n\n" + t("PROTOKOL", "PROTOCOL", "ПРОТОКОЛ") + "\n" + proto(c.proto) + " · " + ver
                 + "\n\n" + t("ADRESLER", "ADDRESSES", "АДРЕСА")
                 + "\n" + t("Yerel ", "Local  ", "Локал.") + " " + c.laddr + ":" + c.lport
@@ -677,6 +688,21 @@ public class ConnectionsActivity extends Activity {
                 + "\n" + t("Son   ", "Last  ", "Послед") + " " + clock(c.last)
                 + "\n" + t("Süre  ", "Span  ", "Длит. ") + " " + dur(c.last - c.first)
                 + "\n" + t("Durum ", "State ", "Статус") + " " + st;
+    }
+
+    String ownerText(PacketStats.Conn c) {
+        String[] o = IpInfo.lookup(c.raddr);
+        if (o == null) return "";
+        if (o[0].equals("--")) return t("Yerel ağ", "Local network", "Локальная сеть");
+        return IpInfo.flag(o[0]) + " " + o[2] + " · AS" + o[1] + " · " + o[0];
+    }
+
+    String ownerShort(PacketStats.Conn c) {
+        String[] o = IpInfo.lookup(c.raddr);
+        if (o == null) return "";
+        if (o[0].equals("--")) return " · " + t("yerel", "local", "локальный");
+        String n = o[2].length() > 22 ? o[2].substring(0, 22) : o[2];
+        return " · " + IpInfo.flag(o[0]) + " " + n;
     }
 
     static long u32(byte[] b, int i) {
@@ -978,6 +1004,13 @@ public class ConnectionsActivity extends Activity {
         cb.addView(br);
         setBox.addView(cb, lp(12));
 
+        setBox.addView(info(t("IP veritabanı", "IP database", "База IP"),
+                IpInfo.ready
+                    ? (IpInfo.count4 + IpInfo.count6) + t(" aralık yüklü. Bağlantı ayrıntısında sahibi (ülke, şirket) görünür. Kaynak: iptoasn.com (kamu malı).",
+                        " ranges loaded. Connection details show the owner (country, company). Source: iptoasn.com (public domain).",
+                        " диапазонов загружено. В деталях соединения виден владелец (страна, компания). Источник: iptoasn.com (общественное достояние).")
+                    : t("Veritabanı yükleniyor ya da pakette yok.", "Database is loading or missing from the package.", "База загружается или отсутствует в пакете.")), lp(12));
+
         setBox.addView(info(t("Renk anlamları", "Color legend", "Цвета"),
                 t("Kırmızı: RST / bağlantı hatası\nYeşil: TLS (şifreli web)\nMavi: DNS\nTuruncu: engellendi\n⚑ reklam/izleyici",
                   "Red: RST / connection error\nGreen: TLS (encrypted web)\nBlue: DNS\nOrange: blocked\n⚑ ad/tracker",
@@ -1158,6 +1191,7 @@ public class ConnectionsActivity extends Activity {
             getWindow().setNavigationBarColor(Color.BLACK);
         } catch (Throwable ignored) { }
         PacketStats.init(this);
+        IpInfo.init(this);
         lang = PacketStats.lang;
 
         LinearLayout root = new LinearLayout(this);
@@ -1270,7 +1304,7 @@ public class ConnectionsActivity extends Activity {
                     PacketStats.Conn c = conns.get(i);
                     rowAccent = accentOf(c);
                     return row(null, (c.blocked ? "⛔ " : "") + (Trackers.is(c) ? "⚑ " : "") + dest(c),
-                            proto(c.proto) + " · " + c.raddr + ":" + c.rport + " · ↑" + fmt(c.bOut) + " ↓" + fmt(c.bIn),
+                            proto(c.proto) + " · " + c.raddr + ":" + c.rport + ownerShort(c) + " · ↑" + fmt(c.bOut) + " ↓" + fmt(c.bIn),
                             fmt(c.bOut + c.bIn), (float) (c.bOut + c.bIn) / maxBytes);
                 }
                 PacketStats.Pkt k = pkts.get(i);
