@@ -15,3 +15,4 @@ app/dex/
 *.b64
 *.bak
 apk.dex
+capture.pcap

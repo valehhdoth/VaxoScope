@@ -900,6 +900,27 @@ public class ConnectionsActivity extends Activity {
         return c;
     }
 
+    void showLicenses() {
+        String s;
+        try (InputStream in = getAssets().open("NOTICE.txt")) {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            int r;
+            while ((r = in.read(b)) > 0) bo.write(b, 0, r);
+            s = bo.toString("UTF-8");
+        } catch (Throwable e) { s = "NOTICE not found"; }
+        new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(t("Açık kaynak lisansları", "Open source licenses", "Лицензии открытого ПО"))
+                .setMessage(s)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Throwable e) { return "?"; }
+    }
+
     void buildSettings() {
         setBox.removeAllViews();
 
@@ -1003,6 +1024,16 @@ public class ConnectionsActivity extends Activity {
         }));
         cb.addView(br);
         setBox.addView(cb, lp(12));
+
+        LinearLayout abc = info(t("Hakkında", "About", "О приложении"),
+                "VaxoScope v" + versionName() + "\n"
+                + t("MIT lisansı. Tünel motoru: hev-socks5-tunnel (MIT). IP verisi: iptoasn.com (kamu malı).",
+                    "MIT license. Tunnel engine: hev-socks5-tunnel (MIT). IP data: iptoasn.com (public domain).",
+                    "Лицензия MIT. Движок туннеля: hev-socks5-tunnel (MIT). Данные IP: iptoasn.com (общественное достояние)."));
+        LinearLayout.LayoutParams abp = new LinearLayout.LayoutParams(-1, -2);
+        abp.setMargins(0, dp(12), 0, 0);
+        abc.addView(btn(t("Açık kaynak lisansları", "Open source licenses", "Лицензии открытого ПО"), false, v -> showLicenses()), abp);
+        setBox.addView(abc, lp(12));
 
         setBox.addView(info(t("IP veritabanı", "IP database", "База IP"),
                 IpInfo.ready
