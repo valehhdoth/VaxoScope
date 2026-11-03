@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+- Blocking is stricter: incoming packets of blocked apps are dropped too
+- App detection for new connections is retried instead of tried once
+- Blocking an app that is not in the monitored list adds it automatically
+- Optional IPv6 capture (experimental, off by default)
+
 ## 1.0.0
 
 First public release.

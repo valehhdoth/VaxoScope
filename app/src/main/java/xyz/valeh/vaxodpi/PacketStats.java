@@ -20,6 +20,9 @@ final class PacketStats {
         long sUp, sDown;
         boolean sCnt;
         boolean rst, chk, blocked;
+        int tries;
+        long lastTry;
+        String hostSeen;
         final ArrayDeque<Pkt> pkts = new ArrayDeque<>();
         List<Pkt> snapshot() { synchronized (pkts) { return new ArrayList<>(pkts); } }
     }
@@ -406,13 +409,33 @@ final class PacketStats {
         c.uid = u;
     }
 
+    private static int ownerUid(Conn c) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29 && cm != null) {
+                return cm.getConnectionOwnerUid(c.proto,
+                        new java.net.InetSocketAddress(java.net.InetAddress.getByName(c.laddr), c.lport),
+                        new java.net.InetSocketAddress(java.net.InetAddress.getByName(c.raddr), c.rport));
+            }
+        } catch (Throwable ignored) { }
+        return -1;
+    }
+
     private static boolean isBlocked(Conn c) {
         if (c.blocked) return true;
-        if (!BLK_UID.isEmpty() && c.uid == -2 && (c.proto == 6 || c.proto == 17)) resolveNow(c);
+        long now = System.currentTimeMillis();
+        if (!BLK_UID.isEmpty() && (c.proto == 6 || c.proto == 17) && c.uid < 0 && c.tries < 10 && now - c.lastTry > 300) {
+            c.tries++;
+            c.lastTry = now;
+            int u = ownerUid(c);
+            if (u >= 0) c.uid = u; else if (c.uid == -2) c.uid = -1;
+        }
         if (c.uid >= 0 && BLK_UID.contains(c.uid)) { c.blocked = true; return true; }
-        if (c.rport != 53 && c.rport != 853 && hostBlocked(c.name != null ? c.name : c.guess)) {
-            c.blocked = true;
-            return true;
+        if (!BLK_HOST.isEmpty() && c.rport != 53 && c.rport != 853) {
+            String h = c.name != null ? c.name : c.guess;
+            if (h != null && !h.equals(c.hostSeen)) {
+                c.hostSeen = h;
+                if (hostBlocked(h)) { c.blocked = true; return true; }
+            }
         }
         return false;
     }
@@ -666,7 +689,7 @@ final class PacketStats {
             curConn = null;
             parse(TABLE, out, b, n, n, t, true);
             Conn c = curConn;
-            if (out && c != null && hasBlocks()) return !isBlocked(c);
+            if (c != null && hasBlocks()) return !isBlocked(c);
         } catch (Throwable ignored) { }
         return true;
     }

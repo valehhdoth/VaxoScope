@@ -121,6 +121,13 @@ public final class VaxoVpnService extends VpnService {
         // uyumlu bir istemci adresi kullan.
         builder.addAddress("198.18.0.2", 15);
         builder.addRoute("0.0.0.0", 0);
+        if (getSharedPreferences("vaxodpi", MODE_PRIVATE).getBoolean("ipv6", false)) {
+            try {
+                builder.addAddress("fc00::2", 64);
+                builder.addRoute("::", 0);
+                flog("IPv6 acik");
+            } catch (Throwable t6) { flog("IPv6 hatasi: " + t6); }
+        }
         String[] dnsList = {"1.1.1.1", "8.8.8.8", "9.9.9.9", "94.140.14.14"};
         int di = getSharedPreferences("vaxodpi", MODE_PRIVATE).getInt("dns", 0);
         if (di < 0 || di >= dnsList.length) di = 0;
@@ -311,7 +318,7 @@ public final class VaxoVpnService extends VpnService {
                         if ((f[1].revents & android.system.OsConstants.POLLIN) != 0) {
                             int n = android.system.Os.read(a, buf, 0, buf.length);
                             if (n > 0) {
-                                try { PacketStats.onPacket(false, buf, n); android.system.Os.write(tun, buf, 0, n); pktIn++; }
+                                try { if (PacketStats.onPacket(false, buf, n)) { android.system.Os.write(tun, buf, 0, n); pktIn++; } }
                                 catch (android.system.ErrnoException we) {
                                     if (++wrErr % 200 == 1) flog("tun yazma: " + we.getMessage() + " n=" + n);
                                 }

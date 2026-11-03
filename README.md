@@ -38,7 +38,7 @@ Because it is a VPN, Android allows only one VPN at a time and the app can only 
 - QUIC (UDP 443) is encrypted. Names for such connections come from earlier DNS answers and may be missing or approximate.
 - If Private DNS is enabled in Android settings, DNS queries are encrypted and cannot be read.
 - The country of an IP is the registration country of its network, not necessarily where the server is.
-- IPv6 traffic is currently not routed through the tunnel.
+- IPv6 capture is experimental and off by default (Settings).
 - Blocking works only while the VPN is on.
 
 ## Install

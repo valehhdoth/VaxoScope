@@ -38,7 +38,7 @@ Bir VPN olduğu için Android aynı anda tek VPN'e izin verir ve uygulama yalnı
 - QUIC (UDP 443) şifrelidir. Bu bağlantıların adları eski DNS yanıtlarından gelir, eksik ya da yaklaşık olabilir.
 - Android'de Private DNS açıksa DNS sorguları şifreli gider ve okunamaz.
 - IP'nin ülkesi ağın kayıtlı olduğu ülkedir, sunucunun fiziksel konumu olmayabilir.
-- IPv6 trafiği şu an tünelden geçirilmez.
+- IPv6 yakalama deneyseldir ve varsayılan olarak kapalıdır (Ayarlar).
 - Engelleme yalnızca VPN açıkken çalışır.
 
 ## Kurulum

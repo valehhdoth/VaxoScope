@@ -506,8 +506,18 @@ public class ConnectionsActivity extends Activity {
             return;
         }
         HashSet<String> s = new HashSet<>(sp.getStringSet("blk_apps", new HashSet<String>()));
-        if (!s.add(pk)) s.remove(pk);
+        boolean added = !s.remove(pk);
+        if (added) s.add(pk);
         sp.edit().putStringSet("blk_apps", s).apply();
+        Set<String> mon = sp.getStringSet("apps", null);
+        if (added && mon != null && !mon.isEmpty() && !mon.contains(pk)) {
+            HashSet<String> m2 = new HashSet<>(mon);
+            m2.add(pk);
+            sp.edit().putStringSet("apps", m2).apply();
+            toast(t("Bu uygulama izleme listesinde değildi, eklendi. Engelin işlemesi için VPN'i kapatıp yeniden aç.",
+                    "This app was not in the monitored list, so it was added. Restart the VPN for the block to work.",
+                    "Приложения не было в списке отслеживания, оно добавлено. Перезапустите VPN, чтобы блокировка заработала."));
+        }
         PacketStats.loadBlocks(this);
         buildAppRow();
         refresh();
@@ -964,6 +974,11 @@ public class ConnectionsActivity extends Activity {
         cf.addView(btn(t("Engelli liste", "Blocked list", "Список блокировок") + " (" + nb + ")", false, v -> manageBlocks()), fp);
         setBox.addView(cf, lp(12));
 
+        setBox.addView(toggle(t("IPv6 trafiğini de yakala (deneysel)", "Also capture IPv6 (experimental)", "Также перехватывать IPv6 (экспериментально)"),
+                t("Engellenen uygulamaların IPv6 üzerinden kaçmasını önler. Bir sonraki bağlantıda geçerli olur. İnternet sorunu çıkarsa kapat.",
+                  "Stops blocked apps from slipping through over IPv6. Applies on the next connection. Turn off if the internet misbehaves.",
+                  "Не даёт заблокированным приложениям обходить блокировку по IPv6. Действует при следующем подключении. Отключите, если пропадёт интернет."),
+                "ipv6", false, null), lp(12));
         setBox.addView(toggle(t("İzleyici uyarısı", "Tracker alert", "Уведомление о трекерах"),
                 t("Reklam/izleyici alan adına ilk temasta bildirim gönderir.", "Notifies on first contact with an ad/tracker domain.", "Уведомляет при первом обращении к рекламному/трекерному домену."),
                 "alert_trk", false, null), lp(12));
