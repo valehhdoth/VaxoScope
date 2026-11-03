@@ -64,6 +64,27 @@ public class ConnectionsActivity extends Activity {
         }
     }
 
+    static class Loader extends View {
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        float a;
+        Loader(Context c) {
+            super(c);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+        }
+        @Override protected void onDraw(Canvas c) {
+            float w = getWidth(), st = w * 0.09f;
+            p.setStrokeWidth(st);
+            RectF r = new RectF(st, st, w - st, getHeight() - st);
+            p.setColor(0xFF1E1E1E);
+            c.drawArc(r, 0, 360, false, p);
+            p.setColor(Color.WHITE);
+            c.drawArc(r, a, 100, false, p);
+            a = (a + 7) % 360;
+            postInvalidateOnAnimation();
+        }
+    }
+
     int tab, lvl = LIST, selUid, filter, pktMode, selNum, lang, rowAccent;
     boolean imp;
     String query = "";
@@ -809,6 +830,7 @@ public class ConnectionsActivity extends Activity {
         put(srcRow, chip(t("Dosya", "File", "Файл"), imp, 9, v -> { imp = true; selUid = ALL; buildFilters(); go(APP); }));
         put(srcRow, chip("DNS", false, 9, v -> go(DNSL)));
         put(srcRow, chip(t("Rapor", "Report", "Отчёт"), false, 9, v -> go(REP)));
+        put(srcRow, chip(t("Ağ", "Network", "Сеть"), false, 9, v -> startActivity(new Intent(this, ScannerActivity.class))));
         String[] fn = {t("Tümü", "All", "Все"), "TCP", "UDP", "DNS", "TLS"};
         for (int i = 0; i < fn.length; i++) {
             final int k = i;
@@ -1435,7 +1457,40 @@ public class ConnectionsActivity extends Activity {
         bp.setMargins(dp(16), dp(8), dp(16), dp(16));
         root.addView(bar, bp);
 
-        setContentView(root);
+        if (b == null) {
+            FrameLayout host = new FrameLayout(this);
+            host.addView(root, new FrameLayout.LayoutParams(-1, -1));
+            final FrameLayout splash = new FrameLayout(this);
+            splash.setBackgroundColor(Color.BLACK);
+            splash.setClickable(true);
+            LinearLayout sbx = new LinearLayout(this);
+            sbx.setOrientation(LinearLayout.VERTICAL);
+            sbx.setGravity(Gravity.CENTER_HORIZONTAL);
+            sbx.addView(new Loader(this), new LinearLayout.LayoutParams(dp(56), dp(56)));
+            TextView sname = bold("VaxoScope", 22, Color.WHITE);
+            sname.setPadding(0, dp(18), 0, 0);
+            sbx.addView(sname);
+            FrameLayout.LayoutParams spl = new FrameLayout.LayoutParams(-2, -2);
+            spl.gravity = Gravity.CENTER;
+            splash.addView(sbx, spl);
+            host.addView(splash, new FrameLayout.LayoutParams(-1, -1));
+            setContentView(host);
+            final long t0 = android.os.SystemClock.uptimeMillis();
+            h.post(new Runnable() {
+                @Override public void run() {
+                    long el = android.os.SystemClock.uptimeMillis() - t0;
+                    if (el >= 700 && (IpInfo.ready || el >= 2500)) {
+                        splash.animate().alpha(0f).setDuration(250).withEndAction(new Runnable() {
+                            @Override public void run() { splash.setVisibility(View.GONE); }
+                        }).start();
+                    } else {
+                        h.postDelayed(this, 100);
+                    }
+                }
+            });
+        } else {
+            setContentView(root);
+        }
         applyLang();
     }
 

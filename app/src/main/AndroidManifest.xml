@@ -55,5 +55,6 @@
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/scope_widget_info"/>
         </receiver>
+    <activity android:name=".ScannerActivity" android:exported="false" android:label="VaxoScope"/>
     </application>
 </manifest>

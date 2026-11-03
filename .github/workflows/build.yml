@@ -83,3 +83,4 @@ jobs:
           name: VaxoScope ${{ github.ref_name }}
           files: VaxoScope-${{ github.ref_name }}.apk
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
