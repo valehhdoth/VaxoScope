@@ -7,7 +7,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Tarama durumunun tek sahibi. Ekran dönse ya da kapansa bile korunur. */
+/** Tarama durumunun tek sahibi. Ekran dönse ya da sekme değişse bile korunur. */
 public final class ScanRepository {
     public static final int IDLE = 0, RUNNING = 1, DONE = 2, CANCELLED = 3, FAILED = 4;
 
@@ -16,27 +16,30 @@ public final class ScanRepository {
     private ScanRepository() { }
 
     public volatile int state = IDLE;
-    public volatile String phase = "", error = "", arpState = "-";
+    public volatile String phase = "", error = "", arpState = "-", netKey = "";
     public volatile boolean mdnsOk;
     public volatile NetInfo net;
     public volatile NetworkScanner scanner;
     public volatile long startMs, endMs;
     public final ConcurrentHashMap<String, Device> devices = new ConcurrentHashMap<String, Device>();
 
-    private volatile int total, dTotal;
-    private final AtomicInteger done = new AtomicInteger(), dDone = new AtomicInteger();
+    private volatile int total, dTotal, vTotal;
+    private final AtomicInteger done = new AtomicInteger(), dDone = new AtomicInteger(), vDone = new AtomicInteger();
 
     synchronized void begin(NetInfo n) {
         devices.clear();
         net = n;
         error = "";
         arpState = "-";
+        netKey = "";
         mdnsOk = false;
         phase = "probe";
         total = 0;
         dTotal = 0;
+        vTotal = 0;
         done.set(0);
         dDone.set(0);
+        vDone.set(0);
         startMs = SystemClock.elapsedRealtime();
         endMs = 0;
         state = RUNNING;
@@ -46,6 +49,8 @@ public final class ScanRepository {
     void tick() { done.incrementAndGet(); }
     void setDetailTotal(int t) { dTotal = t; dDone.set(0); }
     void detailTick() { dDone.incrementAndGet(); }
+    void setVerifyTotal(int t) { vTotal = t; vDone.set(0); }
+    void verifyTick() { vDone.incrementAndGet(); }
 
     synchronized void finish() {
         if (state != RUNNING) return;
@@ -85,10 +90,11 @@ public final class ScanRepository {
         return d;
     }
 
+    /** Sıra: bu telefon, ağ geçidi, çevrimiçiler, çevrimdışılar. */
     public List<Device> snapshot() {
         TreeMap<Long, Device> tm = new TreeMap<Long, Device>();
         for (Device d : devices.values()) {
-            long g = d.self ? 0 : d.gateway ? 1 : 2;
+            long g = d.self ? 0 : d.gateway ? 1 : d.offline ? 3 : 2;
             tm.put((g << 40) + NetInfo.parse(d.ip), d);
         }
         return new ArrayList<Device>(tm.values());
@@ -97,10 +103,15 @@ public final class ScanRepository {
     public float progress() {
         if (state == DONE) return 1f;
         if (total <= 0) return 0f;
-        float p1 = Math.min(1f, done.get() / (float) total);
-        if (!"details".equals(phase)) return 0.8f * p1;
-        float p2 = dTotal == 0 ? 1f : Math.min(1f, dDone.get() / (float) dTotal);
-        return 0.8f + 0.2f * p2;
+        String ph = phase;
+        if ("probe".equals(ph)) return 0.7f * Math.min(1f, done.get() / (float) total);
+        if ("wait".equals(ph)) return 0.7f;
+        if ("details".equals(ph)) {
+            float p = dTotal == 0 ? 1f : Math.min(1f, dDone.get() / (float) dTotal);
+            return 0.7f + 0.2f * p;
+        }
+        float p = vTotal == 0 ? 1f : Math.min(1f, vDone.get() / (float) vTotal);
+        return 0.9f + 0.1f * p;
     }
 
     public long elapsedMs() {

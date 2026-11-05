@@ -20,6 +20,7 @@ Her şey telefonunda kalır. VaxoScope'ta hesap, analitik ve reklam yoktur, kend
 - DNS geçmişi ve 7 günlük kullanım raporu
 - Güvenlik duvarı: uygulama ya da site engelleme (VPN açıkken çalışır)
 - Reklam/izleyici işaretleme ve isteğe bağlı bildirim
+- Wi-Fi ağ tarayıcısı: yerel ağdaki cihazlar, çevrimiçi/çevrimdışı durum, cihaz adları ve tür tahmini
 - Hızlı ayar kutucuğu, ana ekran widget'ı, yedekleme ve geri yükleme
 - Türkçe, İngilizce ve Rusça arayüz
 
@@ -40,6 +41,7 @@ Bir VPN olduğu için Android aynı anda tek VPN'e izin verir ve uygulama yalnı
 - IP'nin ülkesi ağın kayıtlı olduğu ülkedir, sunucunun fiziksel konumu olmayabilir.
 - IPv6 yakalama deneyseldir ve varsayılan olarak kapalıdır (Ayarlar).
 - Engelleme yalnızca VPN açıkken çalışır.
+- Wi-Fi tarayıcısı Android 10+ üzerinde MAC adreslerini okuyamaz, bu yüzden üretici adları çoğu zaman görünmez. Cihaz türleri tahmindir.
 
 ## Kurulum
 

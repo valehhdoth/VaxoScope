@@ -68,3 +68,8 @@ OF SUCH DAMAGE.
 
 ==== hev-socks5-tunnel/third-part/yaml/License ====
 (same text as hev-socks5-tunnel/License)
+
+
+Device vendor names
+-------------------
+Derived from the IEEE Registration Authority OUI registry (public data), https://standards-oui.ieee.org/

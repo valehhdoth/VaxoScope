@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- New Network tab: Wi-Fi network scanner (ICMP, TCP, mDNS, ARP where Android allows it)
+- Device list with online and offline devices, filters, details, hostnames, type guesses
+- Offline devices are detected by comparing with earlier scans and re-checking before marking them offline
+- Vendor names from the IEEE OUI registry when a MAC address is readable
+- Loading screen on start
+
 ## 1.0.1
 
 - Blocking is stricter: incoming packets of blocked apps are dropped too

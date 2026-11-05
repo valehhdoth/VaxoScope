@@ -10,9 +10,12 @@ import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 
 public final class MdnsDiscovery {
-    public interface Listener { void onFound(String ip, String name, String type, int port); }
+    public interface Listener {
+        void onFound(String ip, String name, String type, int port, Map<String, byte[]> attrs);
+    }
 
     static final String[] TYPES = {
         "_http._tcp.", "_googlecast._tcp.", "_airplay._tcp.", "_raop._tcp.", "_companion-link._tcp.",
@@ -83,7 +86,9 @@ public final class MdnsDiscovery {
                         InetAddress a = s.getHost();
                         Listener l = out;
                         if (l != null && a instanceof Inet4Address && !isStopped()) {
-                            l.onFound(a.getHostAddress(), s.getServiceName(), s.getServiceType(), s.getPort());
+                            Map<String, byte[]> at = null;
+                            try { at = s.getAttributes(); } catch (Throwable ignored) { }
+                            l.onFound(a.getHostAddress(), s.getServiceName(), s.getServiceType(), s.getPort(), at);
                         }
                     } catch (Throwable ignored) { }
                     done(g);

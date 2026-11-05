@@ -86,6 +86,8 @@ public class ConnectionsActivity extends Activity {
     }
 
     int tab, lvl = LIST, selUid, filter, pktMode, selNum, lang, rowAccent;
+    ScannerPage scanner;
+    TextView btnNet;
     boolean imp;
     String query = "";
     PacketStats.Conn selConn;
@@ -830,7 +832,6 @@ public class ConnectionsActivity extends Activity {
         put(srcRow, chip(t("Dosya", "File", "Файл"), imp, 9, v -> { imp = true; selUid = ALL; buildFilters(); go(APP); }));
         put(srcRow, chip("DNS", false, 9, v -> go(DNSL)));
         put(srcRow, chip(t("Rapor", "Report", "Отчёт"), false, 9, v -> go(REP)));
-        put(srcRow, chip(t("Ağ", "Network", "Сеть"), false, 9, v -> startActivity(new Intent(this, ScannerActivity.class))));
         String[] fn = {t("Tümü", "All", "Все"), "TCP", "UDP", "DNS", "TLS"};
         for (int i = 0; i < fn.length; i++) {
             final int k = i;
@@ -891,6 +892,8 @@ public class ConnectionsActivity extends Activity {
     void applyLang() {
         btnList.setText(t("Liste", "List", "Список"));
         btnSet.setText(t("Ayarlar", "Settings", "Настройки"));
+        btnNet.setText(t("Ağ", "Network", "Сеть"));
+        if (scanner != null) scanner.setLang(lang);
         search.setHint(t("Ara: tiktok, tcp port 443, app chrome, >1mb", "Search: tiktok, tcp port 443, app chrome, >1mb", "Поиск: tiktok, tcp port 443, app chrome, >1mb"));
         buildFilters();
         buildAppRow();
@@ -1119,6 +1122,8 @@ public class ConnectionsActivity extends Activity {
         status.setTextColor(run ? Color.WHITE : OFF);
         btnList.setTextColor(tab == 0 ? Color.WHITE : OFF);
         btnSet.setTextColor(tab == 1 ? Color.WHITE : OFF);
+        btnNet.setTextColor(tab == 2 ? Color.WHITE : OFF);
+        if (scanner != null) scanner.setActive(tab == 2);
 
         if (lastT > 0 && now > lastT) {
             float dt = (now - lastT) / 1000f;
@@ -1134,11 +1139,13 @@ public class ConnectionsActivity extends Activity {
         listPage.setVisibility(listy ? View.VISIBLE : View.GONE);
         detSv.setVisibility(det ? View.VISIBLE : View.GONE);
         setSv.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
+        if (scanner != null) scanner.view().setVisibility(tab == 2 ? View.VISIBLE : View.GONE);
         topBox.setVisibility(lvl <= APP ? View.VISIBLE : View.GONE);
         appRow.setVisibility(lvl == APP && !imp && selUid != ALL ? View.VISIBLE : View.GONE);
         graph.setVisibility(imp ? View.GONE : View.VISIBLE);
         gtxt.setVisibility(imp ? View.GONE : View.VISIBLE);
         if (tab == 1) { sub.setText(t("Ayarlar", "Settings", "Настройки")); return; }
+        if (tab == 2) { sub.setText(scanner.subtitle()); return; }
 
         if (lvl == REP) {
             buildReport();
@@ -1280,7 +1287,7 @@ public class ConnectionsActivity extends Activity {
         sub.setPadding(dp(20), dp(4), dp(20), dp(8));
         sub.setSingleLine(true);
         sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        sub.setOnClickListener(v -> { if (tab == 0 && lvl > minLvl()) onBackPressed(); });
+        sub.setOnClickListener(v -> { if ((tab == 0 && lvl > minLvl()) || (tab == 2 && scanner.inDetail())) onBackPressed(); });
         root.addView(sub);
 
         FrameLayout pages = new FrameLayout(this);
@@ -1429,6 +1436,9 @@ public class ConnectionsActivity extends Activity {
         setBox.setOrientation(LinearLayout.VERTICAL);
         setSv.addView(setBox);
         pages.addView(setSv);
+        scanner = new ScannerPage(this, lang);
+        scanner.view().setVisibility(View.GONE);
+        pages.addView(scanner.view(), new FrameLayout.LayoutParams(-1, -1));
 
         root.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1f));
 
@@ -1448,11 +1458,19 @@ public class ConnectionsActivity extends Activity {
         btnList.setOnClickListener(v -> { if (tab == 0) go(minLvl()); else { tab = 0; refresh(); } });
         btnSet.setOnClickListener(v -> { tab = 1; buildSettings(); refresh(); });
         btnGo.setOnClickListener(v -> { if (running()) stopVpn(); else startVpn(); });
+        btnNet = bold("", 13, OFF);
+        btnNet.setGravity(Gravity.CENTER);
+        btnNet.setPadding(0, dp(12), 0, dp(12));
+        btnNet.setOnClickListener(v -> { tab = 2; refresh(); });
+        btnList.setTextSize(13);
+        btnSet.setTextSize(13);
+        btnGo.setTextSize(15);
         bar.addView(btnList, new LinearLayout.LayoutParams(0, -2, 1f));
-        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(0, -2, 1.5f);
+        bar.addView(btnNet, new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(0, -2, 1.7f);
         gp.setMargins(dp(8), 0, dp(8), 0);
         bar.addView(btnGo, gp);
-        bar.addView(btnSet, new LinearLayout.LayoutParams(0, -2, 1f));
+        bar.addView(btnSet, new LinearLayout.LayoutParams(0, -2, 1.2f));
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, -2);
         bp.setMargins(dp(16), dp(8), dp(16), dp(16));
         root.addView(bar, bp);
@@ -1495,13 +1513,23 @@ public class ConnectionsActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (tab == 1) { tab = 0; refresh(); }
+        if (tab == 2) { if (!scanner.back()) { tab = 0; refresh(); } }
+        else if (tab == 1) { tab = 0; refresh(); }
         else if (lvl == DNSL || lvl == REP) go(minLvl());
         else if (lvl == FLOW) go(CONN);
         else if (lvl > minLvl()) go(lvl - 1);
         else super.onBackPressed();
     }
 
-    @Override protected void onResume() { super.onResume(); h.post(tick); }
-    @Override protected void onPause() { super.onPause(); h.removeCallbacks(tick); }
+    @Override protected void onResume() { super.onResume(); h.post(tick); if (scanner != null) scanner.resume(); }
+    @Override protected void onPause() {
+        super.onPause();
+        h.removeCallbacks(tick);
+        if (scanner != null) scanner.pause();
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        if (scanner != null) scanner.destroy(isFinishing());
+    }
 }

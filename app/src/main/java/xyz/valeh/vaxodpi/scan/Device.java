@@ -8,10 +8,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class Device {
     public final String ip;
-    public volatile String mac, host, mdnsName, typeBasis = "-";
+    public volatile String mac, macSrc, host, mdnsName, typeBasis = "-";
     public volatile int type;
-    public volatile boolean self, gateway, online;
-    public volatile long rtt = -1;
+    public volatile boolean self, gateway, online, offline, hostCached;
+    public volatile long rtt = -1, firstSeen, lastSeen;
     public final Set<Integer> ports = new ConcurrentSkipListSet<Integer>();
     public final Set<String> methods = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     public final Set<String> serviceTypes = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());

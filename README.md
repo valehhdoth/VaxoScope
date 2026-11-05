@@ -20,6 +20,7 @@ Everything stays on your phone. VaxoScope has no accounts, no analytics and no a
 - DNS history and a 7-day usage report
 - Firewall: block an app or a host (works while the VPN is on)
 - Ad and tracker flagging with optional notifications
+- Wi-Fi network scanner: devices on your local network, with online/offline state, host names and type guesses
 - Quick settings tile, home screen widget, backup and restore
 - Interface in Turkish, English and Russian
 
@@ -40,6 +41,7 @@ Because it is a VPN, Android allows only one VPN at a time and the app can only 
 - The country of an IP is the registration country of its network, not necessarily where the server is.
 - IPv6 capture is experimental and off by default (Settings).
 - Blocking works only while the VPN is on.
+- The Wi-Fi scanner cannot read MAC addresses on Android 10+, so vendor names are often unavailable. Device types are guesses.
 
 ## Install
 
