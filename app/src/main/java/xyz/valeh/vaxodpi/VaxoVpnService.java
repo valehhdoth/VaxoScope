@@ -308,6 +308,7 @@ public final class VaxoVpnService extends VpnService {
                             } catch (Throwable ignored) { }
                             ScopeWidget.refresh(VaxoVpnService.this);
                             if (++ntN % 5 == 0) { PacketStats.saveUsage(); PacketStats.purgeOld(); }
+                            if (ntN % 15 == 0) PacketStats.saveHistory();
                         }
                         if (now - lastSt > 5000) { lastSt = now; flog("durum out=" + pktOut + " in=" + pktIn + " " + PacketStats.summary()); }
                         if (r <= 0) continue;
@@ -455,6 +456,8 @@ public final class VaxoVpnService extends VpnService {
             stopForeground(true);
             ((android.app.NotificationManager)
                     getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIF_ID);
+        PacketStats.saveUsage();
+        PacketStats.saveHistory();
         PacketStats.lastPkt = 0;
         ScopeWidget.refresh(VaxoVpnService.this);
         ScopeWidget.refreshLater(VaxoVpnService.this);

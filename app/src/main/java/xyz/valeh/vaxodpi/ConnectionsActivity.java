@@ -442,6 +442,7 @@ public class ConnectionsActivity extends Activity {
                 r.put("v", 1);
                 r.put("prefs", dump("vaxodpi"));
                 r.put("usage", dump("vaxo_usage"));
+                r.put("usagenet", dump("vaxo_usage_net"));
                 o.write(r.toString(1).getBytes("UTF-8"));
                 msg = t("Yedek kaydedildi", "Backup saved", "Резервная копия сохранена");
             } catch (Throwable e) { msg = "Hata: " + e.getMessage(); }
@@ -462,6 +463,7 @@ public class ConnectionsActivity extends Activity {
                 if (!"VaxoScope".equals(j.optString("app"))) throw new Exception("x");
                 load("vaxodpi", j.getJSONObject("prefs"));
                 load("vaxo_usage", j.getJSONObject("usage"));
+                if (j.has("usagenet")) load("vaxo_usage_net", j.getJSONObject("usagenet"));
                 msg = t("Yedek geri yüklendi", "Backup restored", "Копия восстановлена");
             } catch (Throwable e) {
                 msg = t("Geçerli bir yedek dosyası değil", "Not a valid backup file", "Недействительный файл копии");
@@ -623,6 +625,43 @@ public class ConnectionsActivity extends Activity {
                     buildSettings();
                 })
                 .setNeutralButton(t("Hepsini izle", "Monitor all", "Следить за всеми"), (dlg, w) -> { sp.edit().remove("apps").apply(); buildSettings(); })
+                .setNegativeButton(t("İptal", "Cancel", "Отмена"), null)
+                .show();
+    }
+
+    void shareText(String s) {
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_TEXT, s);
+        startActivity(Intent.createChooser(i, t("Paylaş", "Share", "Поделиться")));
+    }
+
+    void editRules() {
+        final android.widget.EditText ed = new android.widget.EditText(this);
+        ed.setTextColor(Color.WHITE);
+        ed.setHintTextColor(OFF);
+        ed.setHint("*.doubleclick.net\nads.example.com\n*analytics*");
+        ed.setMinLines(5);
+        ed.setGravity(Gravity.TOP);
+        StringBuilder sb = new StringBuilder();
+        for (String r0 : sp.getStringSet("blk_rules", new HashSet<String>())) sb.append(r0).append('\n');
+        ed.setText(sb.toString());
+        new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(t("Özel engel kuralları", "Custom block rules", "Свои правила блокировки"))
+                .setMessage(t("Her satıra bir alan adı yaz. * joker karakterdir. Örnek: *.doubleclick.net",
+                        "One domain per line. * is a wildcard. Example: *.doubleclick.net",
+                        "Один домен в строке. * — подстановочный знак. Пример: *.doubleclick.net"))
+                .setView(ed)
+                .setPositiveButton(t("Kaydet", "Save", "Сохранить"), (dlg, w0) -> {
+                    HashSet<String> rs = new HashSet<>();
+                    for (String ln : ed.getText().toString().split("\n")) {
+                        String x0 = ln.trim().toLowerCase(Locale.ROOT);
+                        if (x0.length() > 0 && x0.length() < 120) rs.add(x0);
+                    }
+                    sp.edit().putStringSet("blk_rules", rs).apply();
+                    PacketStats.loadBlocks(this);
+                    buildSettings();
+                })
                 .setNegativeButton(t("İptal", "Cancel", "Отмена"), null)
                 .show();
     }
@@ -799,6 +838,35 @@ public class ConnectionsActivity extends Activity {
     void buildReport() {
         PacketStats.saveUsage();
         repRows.clear();
+        long[] mmo = PacketStats.monthNet("m"), mwi = PacketStats.monthNet("w");
+        repRows.add(new Object[]{"S", t("Bu ay", "This month", "Этот месяц"),
+                t("Mobil ", "Mobile ", "Моб. ") + fmt(mmo[0] + mmo[1]) + " · Wi-Fi " + fmt(mwi[0] + mwi[1]), ""});
+        long tcpB = 0, udpB = 0, othB = 0;
+        HashMap<String, long[]> topB = new HashMap<>();
+        HashMap<String, String> topN = new HashMap<>();
+        for (PacketStats.Conn c0 : PacketStats.TABLE.values()) {
+            long b0 = c0.bOut + c0.bIn;
+            if (c0.proto == 6) tcpB += b0; else if (c0.proto == 17) udpB += b0; else othB += b0;
+            long[] acc = topB.get(c0.raddr);
+            if (acc == null) { acc = new long[1]; topB.put(c0.raddr, acc); }
+            acc[0] += b0;
+            if (c0.name != null) topN.put(c0.raddr, c0.name);
+        }
+        long totB = tcpB + udpB + othB;
+        if (totB > 0) {
+            repRows.add(new Object[]{"S", t("Protokoller (bu oturum)", "Protocols (this session)", "Протоколы (эта сессия)"),
+                    "TCP " + (tcpB * 100 / totB) + "% · UDP " + (udpB * 100 / totB) + "% · " + t("diğer", "other", "другое") + " " + (othB * 100 / totB) + "%",
+                    fmt(totB)});
+            List<Map.Entry<String, long[]>> tl = new ArrayList<Map.Entry<String, long[]>>(topB.entrySet());
+            Collections.sort(tl, (x1, y1) -> Long.compare(y1.getValue()[0], x1.getValue()[0]));
+            for (int ti = 0; ti < tl.size() && ti < 5; ti++) {
+                String tip = tl.get(ti).getKey();
+                String[] ow = IpInfo.lookup(tip);
+                String owner = ow == null ? "" : ow[0].equals("--") ? t("yerel", "local", "локальный") : IpInfo.flag(ow[0]) + " " + ow[2];
+                repRows.add(new Object[]{"S", (ti + 1) + ". " + (topN.containsKey(tip) ? topN.get(tip) : tip),
+                        tip + (owner.length() > 0 ? " · " + owner : ""), fmt(tl.get(ti).getValue()[0])});
+            }
+        }
         TreeMap<String, List<Object[]>> days = new TreeMap<>(Collections.reverseOrder());
         for (Map.Entry<String, ?> e : getSharedPreferences("vaxo_usage", 0).getAll().entrySet()) {
             try {
@@ -816,7 +884,8 @@ public class ConnectionsActivity extends Activity {
             Collections.sort(l, (a, b) -> Long.compare((Long) b[1] + (Long) b[2], (Long) a[1] + (Long) a[2]));
             long up = 0, dn = 0, cn = 0;
             for (Object[] o : l) { up += (Long) o[1]; dn += (Long) o[2]; cn += (Long) o[3]; }
-            repRows.add(new Object[]{"H", "▸ " + dayLabel(e.getKey()), up, dn, cn});
+            long[] dwf = PacketStats.dayNet(e.getKey(), "w"), dmb = PacketStats.dayNet(e.getKey(), "m");
+            repRows.add(new Object[]{"H", "▸ " + dayLabel(e.getKey()), up, dn, cn, dwf[0] + dwf[1], dmb[0] + dmb[1]});
             for (int i = 0; i < l.size() && i < 5; i++) {
                 Object[] o = l.get(i);
                 repRows.add(new Object[]{"A", o[0], o[1], o[2], o[3]});
@@ -856,6 +925,7 @@ public class ConnectionsActivity extends Activity {
             int n = selConn.snapshot().size();
             put(detActions, chip(t("Paketler", "Packets", "Пакеты") + " (" + n + ")", true, 13, v -> go(PKTS)));
             if (selConn.proto == 6) put(detActions, chip(t("Konuşma", "Conversation", "Диалог"), false, 13, v -> go(FLOW)));
+            put(detActions, chip(t("Paylaş", "Share", "Поделиться"), false, 13, v -> shareText(detailText(selConn))));
             if (!imp) {
                 put(detActions2, chip(t("PCAP aktar", "Export PCAP", "Экспорт PCAP"), false, 13,
                         v -> exportKeys(PacketStats.keysOf(Collections.singletonList(selConn)), "conn")));
@@ -870,6 +940,7 @@ public class ConnectionsActivity extends Activity {
         } else if (lvl == PKT) {
             put(detActions, chip(t("Ayrıntı", "Details", "Детали"), pktMode == 0, 13, v -> { pktMode = 0; buildDetActions(); refresh(); }));
             put(detActions, chip("Hex", pktMode == 1, 13, v -> { pktMode = 1; buildDetActions(); refresh(); }));
+            put(detActions, chip(t("Paylaş", "Share", "Поделиться"), false, 13, v -> shareText(detail.getText().toString())));
         }
     }
 
@@ -999,6 +1070,43 @@ public class ConnectionsActivity extends Activity {
         cf.addView(btn(t("Engelli liste", "Blocked list", "Список блокировок") + " (" + nb + ")", false, v -> manageBlocks()), fp);
         setBox.addView(cf, lp(12));
 
+        setBox.addView(toggle(t("Bağlantı geçmişini hatırla (24 saat)", "Remember connection history (24 h)", "Помнить историю соединений (24 ч)"),
+                t("Uygulamayı kapatıp açınca son 24 saatin bağlantıları geri gelir.", "Connections from the last 24 hours come back after restarting the app.", "Соединения за последние 24 часа восстанавливаются после перезапуска."),
+                "keep_hist", true, null), lp(12));
+        setBox.addView(toggle(t("Reklam ve izleyicileri engelle", "Block ads and trackers", "Блокировать рекламу и трекеры"),
+                t("Hazır reklam/izleyici alan adı listesine uyan bağlantılar engellenir. Yalnızca VPN açıkken çalışır.", "Connections to domains on the built-in ad/tracker list are blocked. Works only while the VPN is on.", "Соединения с доменами из встроенного списка рекламы/трекеров блокируются. Работает только при включённом VPN."),
+                "blk_trackers", false, () -> PacketStats.loadBlocks(this)), lp(12));
+        int nrules = sp.getStringSet("blk_rules", new HashSet<String>()).size();
+        LinearLayout crules = info(t("Özel engel kuralları", "Custom block rules", "Свои правила блокировки"),
+                t("Alan adı kalıpları engellenir. * joker karakterdir, örnek: *.doubleclick.net", "Domain patterns are blocked. * is a wildcard, e.g. *.doubleclick.net", "Блокируются шаблоны доменов. * — подстановочный знак, например *.doubleclick.net")
+                        + "\n" + t("Kural sayısı: ", "Rules: ", "Правил: ") + nrules);
+        LinearLayout.LayoutParams rpar = new LinearLayout.LayoutParams(-1, -2);
+        rpar.setMargins(0, dp(12), 0, 0);
+        crules.addView(btn(t("Kuralları düzenle", "Edit rules", "Изменить правила"), false, v -> editRules()), rpar);
+        setBox.addView(crules, lp(12));
+        setBox.addView(toggle(t("Yeni uygulama uyarısı", "New app alert", "Уведомление о новых приложениях"),
+                t("İlk kez internete çıkan uygulama için bildirim gönderir. Yeni kullanıcılar için ilk 24 saat öğrenme süresidir.", "Notifies when an app uses the internet for the first time. New users get a 24-hour learning period.", "Уведомляет, когда приложение впервые выходит в интернет. Для новых пользователей первые 24 часа — обучение."),
+                "alert_newapp", false, null), lp(12));
+        int limGb = sp.getInt("lim_gb", 0);
+        long[] mobM = PacketStats.monthNet("m"), wifiM = PacketStats.monthNet("w");
+        LinearLayout climit = card();
+        climit.addView(bold(t("Aylık mobil veri limiti", "Monthly mobile data limit", "Месячный лимит мобильных данных"), 16, Color.WHITE));
+        TextView tlim = tv(t("Bu ay: mobil ", "This month: mobile ", "В этом месяце: моб. ") + fmt(mobM[0] + mobM[1]) + " · Wi-Fi " + fmt(wifiM[0] + wifiM[1])
+                + "\n" + t("%80 ve %100'de bildirim gelir. Yalnızca VPN açıkken ölçülür.", "You get a notification at 80% and 100%. Measured only while the VPN is on.", "Уведомление при 80% и 100%. Измеряется только при включённом VPN."), 13, DIM);
+        tlim.setPadding(0, dp(3), 0, dp(12));
+        climit.addView(tlim);
+        final int[] limOpts = {0, 1, 2, 5, 10, 20};
+        for (int lr0 = 0; lr0 < 2; lr0++) {
+            LinearLayout lrow = new LinearLayout(this);
+            lrow.setPadding(0, lr0 == 0 ? 0 : dp(8), 0, 0);
+            for (int lk = lr0 * 3; lk < lr0 * 3 + 3; lk++) {
+                final int lval = limOpts[lk];
+                put(lrow, chip(lval == 0 ? t("Kapalı", "Off", "Выкл") : lval + " GB", limGb == lval, 12,
+                        v -> { sp.edit().putInt("lim_gb", lval).apply(); buildSettings(); }));
+            }
+            climit.addView(lrow);
+        }
+        setBox.addView(climit, lp(12));
         setBox.addView(toggle(t("IPv6 trafiğini de yakala (deneysel)", "Also capture IPv6 (experimental)", "Также перехватывать IPv6 (экспериментально)"),
                 t("Engellenen uygulamaların IPv6 üzerinden kaçmasını önler. Bir sonraki bağlantıda geçerli olur. İnternet sorunu çıkarsa kapat.",
                   "Stops blocked apps from slipping through over IPv6. Applies on the next connection. Turn off if the internet misbehaves.",
@@ -1350,9 +1458,13 @@ public class ConnectionsActivity extends Activity {
             @Override public View getView(int i, View v, ViewGroup p) {
                 if (lvl == REP) {
                     Object[] o = repRows.get(i);
+                    if (o[0].equals("S")) return row(null, "" + o[1], "" + o[2], "" + o[3], -1f);
                     String dt = o[4] + t(" bağlantı", " connections", " соед.") + " · ↑" + fmt((Long) o[2]) + " ↓" + fmt((Long) o[3]);
                     String tot = fmt((Long) o[2] + (Long) o[3]);
-                    if (o[0].equals("H")) return row(null, "" + o[1], dt, tot, -1f);
+                    if (o[0].equals("H")) {
+                        boolean hasSplit = o.length > 6 && ((Long) o[5] + (Long) o[6]) > 0;
+                        return row(null, "" + o[1], hasSplit ? "Wi-Fi " + fmt((Long) o[5]) + "  ·  " + t("Mobil", "Mobile", "Моб.") + " " + fmt((Long) o[6]) : dt, tot, -1f);
+                    }
                     String pk = "" + o[1];
                     return row(pkgIcon(pk), pkgLabel(pk), dt, tot, -1f);
                 }

@@ -21,6 +21,7 @@ Everything stays on your phone. VaxoScope has no accounts, no analytics and no a
 - Firewall: block an app or a host (works while the VPN is on)
 - Ad and tracker flagging with optional notifications
 - Wi-Fi network scanner: devices on your local network, with online/offline state, host names and type guesses
+- Connection history, Wi-Fi/mobile usage split with a monthly limit, new app alerts, custom block rules
 - Quick settings tile, home screen widget, backup and restore
 - Interface in Turkish, English and Russian
 

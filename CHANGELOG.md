@@ -7,6 +7,12 @@
 - Offline devices are detected by comparing with earlier scans and re-checking before marking them offline
 - Vendor names from the IEEE OUI registry when a MAC address is readable
 - Loading screen on start
+- Connection history is remembered for 24 hours
+- Wi-Fi and mobile data usage are tracked separately, with a monthly mobile data limit and notifications
+- New app alert, custom block rules with wildcards, ready-made ad and tracker blocking
+- Share connection and packet details as text
+- Report shows protocol split and top destinations
+- Every build is signed with the release key, so updates install over each other
 
 ## 1.0.1
 

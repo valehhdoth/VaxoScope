@@ -21,6 +21,7 @@ Her şey telefonunda kalır. VaxoScope'ta hesap, analitik ve reklam yoktur, kend
 - Güvenlik duvarı: uygulama ya da site engelleme (VPN açıkken çalışır)
 - Reklam/izleyici işaretleme ve isteğe bağlı bildirim
 - Wi-Fi ağ tarayıcısı: yerel ağdaki cihazlar, çevrimiçi/çevrimdışı durum, cihaz adları ve tür tahmini
+- Bağlantı geçmişi, Wi-Fi/mobil kullanım ayrımı ve aylık limit, yeni uygulama uyarısı, özel engel kuralları
 - Hızlı ayar kutucuğu, ana ekran widget'ı, yedekleme ve geri yükleme
 - Türkçe, İngilizce ve Rusça arayüz
 

@@ -239,7 +239,11 @@ final class PacketStats {
                 a[0] += du; a[1] += dd; if (nw) a[2]++;
                 c.sUp = c.bOut; c.sDown = c.bIn; c.sCnt = true;
             }
+            long sU = 0, sD = 0;
+            for (long[] v0 : add.values()) { sU += v0[0]; sD += v0[1]; }
             if (add.isEmpty()) return;
+            recordNet(day, sU, sD);
+            checkNewApps(add.keySet());
             android.content.SharedPreferences u = appCtx.getSharedPreferences("vaxo_usage", 0);
             android.content.SharedPreferences.Editor e = u.edit();
             for (Map.Entry<String, long[]> en : add.entrySet()) {
@@ -381,13 +385,24 @@ final class PacketStats {
         }
         Set<String> h = p.getStringSet("blk_hosts", null);
         if (h != null) for (String s : h) BLK_HOST.add(s.toLowerCase(Locale.ROOT));
-        for (Conn c : TABLE.values()) c.blocked = false;
+        trkBlock = p.getBoolean("blk_trackers", false);
+        BLK_PAT.clear();
+        Set<String> rl = p.getStringSet("blk_rules", null);
+        if (rl != null) for (String rs : rl) {
+            java.util.regex.Pattern pt = globToPattern(rs);
+            if (pt != null) BLK_PAT.add(pt);
+        }
+        for (Conn c : TABLE.values()) { c.blocked = false; c.hostSeen = null; }
     }
 
-    static boolean hasBlocks() { return !BLK_UID.isEmpty() || !BLK_HOST.isEmpty(); }
+    static boolean hasBlocks() { return !BLK_UID.isEmpty() || hostRules(); }
 
     private static boolean hostBlocked(String h) {
-        if (BLK_HOST.isEmpty() || h == null) return false;
+        if (h == null) return false;
+        String lc = h.toLowerCase(Locale.ROOT);
+        if (trkBlock && Trackers.host(lc)) return true;
+        for (java.util.regex.Pattern pt : BLK_PAT) if (pt.matcher(lc).matches()) return true;
+        if (BLK_HOST.isEmpty()) return false;
         h = h.toLowerCase(Locale.ROOT);
         while (true) {
             if (BLK_HOST.contains(h)) return true;
@@ -430,7 +445,7 @@ final class PacketStats {
             if (u >= 0) c.uid = u; else if (c.uid == -2) c.uid = -1;
         }
         if (c.uid >= 0 && BLK_UID.contains(c.uid)) { c.blocked = true; return true; }
-        if (!BLK_HOST.isEmpty() && c.rport != 53 && c.rport != 853) {
+        if (hostRules() && c.rport != 53 && c.rport != 853) {
             String h = c.name != null ? c.name : c.guess;
             if (h != null && !h.equals(c.hostSeen)) {
                 c.hostSeen = h;
@@ -473,7 +488,7 @@ final class PacketStats {
         long now = System.currentTimeMillis();
         for (Iterator<Map.Entry<String, Conn>> it = TABLE.entrySet().iterator(); it.hasNext(); ) {
             Conn c = it.next().getValue();
-            if (now - c.last > 900000 && c.sCnt) it.remove();
+            if (now - c.last > 86400000L && c.sCnt) it.remove();
         }
         if (IPNAME.size() > 6000) IPNAME.clear();
     }
@@ -509,6 +524,7 @@ final class PacketStats {
         appCtx = x.getApplicationContext();
         loadLang(x);
         loadBlocks(x);
+        loadHistory();
         pcapOn = x.getSharedPreferences("vaxodpi", 0).getBoolean("cap_on", true);
     }
 
@@ -524,10 +540,236 @@ final class PacketStats {
         return pcapPkts + " paket · " + (sz < 1048576 ? (sz / 1024) + " KB" : String.format(Locale.US, "%.1f MB", sz / 1048576.0));
     }
 
+    // ---------- gecmis, ag turu, limit, yeni uygulama, ozel kurallar ----------
+    static volatile boolean trkBlock;
+    static final java.util.List<java.util.regex.Pattern> BLK_PAT = new java.util.concurrent.CopyOnWriteArrayList<java.util.regex.Pattern>();
+    private static boolean histLoaded;
+
+    static boolean hostRules() { return !BLK_HOST.isEmpty() || !BLK_PAT.isEmpty() || trkBlock; }
+
+    static java.util.regex.Pattern globToPattern(String g) {
+        try {
+            g = g.trim().toLowerCase(Locale.ROOT);
+            if (g.length() == 0) return null;
+            StringBuilder sb = new StringBuilder();
+            boolean wild = g.indexOf('*') >= 0 || g.indexOf('?') >= 0;
+            if (!wild) sb.append("(.*\\.)?");
+            for (char ch : g.toCharArray()) {
+                if (ch == '*') sb.append(".*");
+                else if (ch == '?') sb.append('.');
+                else if ("\\.[]{}()+-^$|".indexOf(ch) >= 0) sb.append('\\').append(ch);
+                else sb.append(ch);
+            }
+            return java.util.regex.Pattern.compile(sb.toString());
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    static void saveHistory() {
+        try {
+            if (appCtx == null || dir == null || !appCtx.getSharedPreferences("vaxodpi", 0).getBoolean("keep_hist", true)) return;
+            long now = System.currentTimeMillis();
+            ArrayList<Object[]> l = new ArrayList<Object[]>();
+            for (Conn c : TABLE.values()) {
+                long ls = c.last;
+                if (now - ls < 86400000L) l.add(new Object[]{ls, c});
+            }
+            Collections.sort(l, new Comparator<Object[]>() {
+                @Override public int compare(Object[] a, Object[] b) { return Long.compare((Long) b[0], (Long) a[0]); }
+            });
+            org.json.JSONArray arr = new org.json.JSONArray();
+            for (int i = 0; i < l.size() && i < 600; i++) {
+                Conn c = (Conn) l.get(i)[1];
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("p", c.proto); o.put("la", c.laddr); o.put("lp", c.lport);
+                o.put("ra", c.raddr); o.put("rp", c.rport);
+                o.put("po", c.pOut); o.put("bo", c.bOut); o.put("pi", c.pIn); o.put("bi", c.bIn);
+                o.put("f", c.first); o.put("l", c.last); o.put("u", c.uid);
+                if (c.name != null) o.put("n", c.name);
+                if (c.guess != null) o.put("g", c.guess);
+                if (c.rst) o.put("r", 1);
+                arr.put(o);
+            }
+            File tmp = new File(dir, "history.tmp");
+            FileWriter w = new FileWriter(tmp);
+            w.write(arr.toString());
+            w.close();
+            tmp.renameTo(new File(dir, "history.json"));
+        } catch (Throwable ignored) { }
+    }
+
+    static void loadHistory() {
+        if (histLoaded) return;
+        histLoaded = true;
+        try {
+            if (appCtx == null || dir == null || !appCtx.getSharedPreferences("vaxodpi", 0).getBoolean("keep_hist", true)) return;
+            File f = new File(dir, "history.json");
+            if (!f.exists() || f.length() > 8L * 1024 * 1024) return;
+            byte[] bb = new byte[(int) f.length()];
+            FileInputStream in = new FileInputStream(f);
+            int off = 0;
+            while (off < bb.length) {
+                int r = in.read(bb, off, bb.length - off);
+                if (r < 0) break;
+                off += r;
+            }
+            in.close();
+            org.json.JSONArray arr = new org.json.JSONArray(new String(bb, 0, off, StandardCharsets.UTF_8));
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.getJSONObject(i);
+                long ls = o.getLong("l");
+                if (now - ls > 86400000L) continue;
+                Conn c = new Conn();
+                c.proto = o.getInt("p"); c.laddr = o.getString("la"); c.lport = o.getInt("lp");
+                c.raddr = o.getString("ra"); c.rport = o.getInt("rp");
+                c.pOut = o.getLong("po"); c.bOut = o.getLong("bo"); c.pIn = o.getLong("pi"); c.bIn = o.getLong("bi");
+                c.first = o.getLong("f"); c.last = ls; c.uid = o.getInt("u");
+                if (o.has("n")) c.name = o.getString("n");
+                if (o.has("g")) c.guess = o.getString("g");
+                c.rst = o.optInt("r", 0) == 1;
+                c.sUp = c.bOut; c.sDown = c.bIn; c.sCnt = true; c.chk = true;
+                TABLE.putIfAbsent(c.proto + "|" + c.laddr + ":" + c.lport + ">" + c.raddr + ":" + c.rport, c);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    static String netKind() {
+        try {
+            android.net.ConnectivityManager m = cm;
+            if (m == null) return "w";
+            boolean wifi = false, cell = false;
+            for (android.net.Network nw : m.getAllNetworks()) {
+                android.net.NetworkCapabilities nc = m.getNetworkCapabilities(nw);
+                if (nc == null || nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue;
+                if (!nc.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+                if (nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) wifi = true;
+                else if (nc.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) cell = true;
+            }
+            return wifi ? "w" : cell ? "m" : "w";
+        } catch (Throwable e) {
+            return "w";
+        }
+    }
+
+    private static void recordNet(String day, long up, long down) {
+        try {
+            if (appCtx == null || (up == 0 && down == 0)) return;
+            String k = day + ":" + netKind();
+            android.content.SharedPreferences u = appCtx.getSharedPreferences("vaxo_usage_net", 0);
+            String[] p = u.getString(k, "0,0").split(",");
+            long nu = Long.parseLong(p[0]) + up, nd = Long.parseLong(p[1]) + down;
+            u.edit().putString(k, nu + "," + nd).apply();
+            if (k.endsWith(":m")) checkLimit();
+        } catch (Throwable ignored) { }
+    }
+
+    static long[] dayNet(String day, String kind) {
+        try {
+            String[] p = appCtx.getSharedPreferences("vaxo_usage_net", 0).getString(day + ":" + kind, "0,0").split(",");
+            return new long[]{Long.parseLong(p[0]), Long.parseLong(p[1])};
+        } catch (Throwable e) {
+            return new long[]{0, 0};
+        }
+    }
+
+    static long[] monthNet(String kind) {
+        long up = 0, down = 0;
+        try {
+            String mon = new java.text.SimpleDateFormat("yyyyMM", Locale.US).format(new Date());
+            for (Map.Entry<String, ?> e : appCtx.getSharedPreferences("vaxo_usage_net", 0).getAll().entrySet()) {
+                String k = e.getKey();
+                if (k.startsWith(mon) && k.endsWith(":" + kind)) {
+                    String[] p = String.valueOf(e.getValue()).split(",");
+                    up += Long.parseLong(p[0]);
+                    down += Long.parseLong(p[1]);
+                }
+            }
+        } catch (Throwable ignored) { }
+        return new long[]{up, down};
+    }
+
+    private static void checkLimit() {
+        try {
+            android.content.SharedPreferences p = appCtx.getSharedPreferences("vaxodpi", 0);
+            int gb = p.getInt("lim_gb", 0);
+            if (gb <= 0) return;
+            long[] m = monthNet("m");
+            long used = m[0] + m[1], lim = gb * 1073741824L;
+            String mon = new java.text.SimpleDateFormat("yyyyMM", Locale.US).format(new Date());
+            String done = p.getString("lim_done", "");
+            int lv = used >= lim ? 100 : (used * 100 >= lim * 80 ? 80 : 0);
+            if (lv == 0 || done.equals(mon + ":" + lv) || (lv == 80 && done.equals(mon + ":100"))) return;
+            p.edit().putString("lim_done", mon + ":" + lv).apply();
+            String title = lang == 1 ? (lv == 100 ? "Mobile data limit reached" : "Mobile data at 80% of limit")
+                    : lang == 2 ? (lv == 100 ? "Лимит мобильных данных исчерпан" : "Использовано 80% лимита мобильных данных")
+                    : (lv == 100 ? "Mobil veri limiti doldu" : "Mobil veri limitinin %80'i kullanıldı");
+            notifyMsg(title, sizeStr(used) + " / " + gb + " GB", 8100 + lv);
+        } catch (Throwable ignored) { }
+    }
+
+    static void notifyMsg(String title, String text, int id) {
+        try {
+            if (appCtx == null) return;
+            android.app.NotificationManager nm = (android.app.NotificationManager)
+                    appCtx.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+            android.app.Notification.Builder b;
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(new android.app.NotificationChannel("vaxo_alert",
+                        lang == 1 ? "Alerts" : lang == 2 ? "Уведомления" : "Uyarılar",
+                        android.app.NotificationManager.IMPORTANCE_DEFAULT));
+                b = new android.app.Notification.Builder(appCtx, "vaxo_alert");
+            } else {
+                b = new android.app.Notification.Builder(appCtx);
+            }
+            b.setSmallIcon(android.R.drawable.stat_sys_warning).setContentTitle(title).setContentText(text).setAutoCancel(true);
+            nm.notify(id, b.build());
+        } catch (Throwable ignored) { }
+    }
+
+    private static void checkNewApps(Set<String> pkgs) {
+        try {
+            android.content.SharedPreferences p = appCtx.getSharedPreferences("vaxodpi", 0);
+            android.content.SharedPreferences s = appCtx.getSharedPreferences("vaxo_seen", 0);
+            long now = System.currentTimeMillis();
+            boolean init = s.getBoolean("_init", false);
+            Set<String> seen = new HashSet<String>(s.getStringSet("apps", new HashSet<String>()));
+            long ts = s.getLong("_ts", now);
+            if (!init) {
+                boolean had = false;
+                for (String k : appCtx.getSharedPreferences("vaxo_usage", 0).getAll().keySet()) {
+                    int i = k.indexOf('|');
+                    if (i > 0) { seen.add(k.substring(i + 1)); had = true; }
+                }
+                ts = had ? 0 : now;
+            }
+            boolean alert = p.getBoolean("alert_newapp", false) && init && (ts == 0 || now - ts > 86400000L);
+            boolean changed = false;
+            for (String pk : pkgs) {
+                if (pk.equals("?") || pk.startsWith("uid:") || pk.equals("android") || pk.equals(appCtx.getPackageName())) continue;
+                if (seen.add(pk)) {
+                    changed = true;
+                    if (alert) {
+                        String lab = pk;
+                        try {
+                            android.content.pm.PackageManager pm = appCtx.getPackageManager();
+                            lab = pm.getApplicationLabel(pm.getApplicationInfo(pk, 0)).toString();
+                        } catch (Throwable ignored) { }
+                        notifyMsg(lang == 1 ? "New app is using the internet" : lang == 2 ? "Новое приложение использует интернет" : "Yeni uygulama internete çıktı",
+                                lab + " (" + pk + ")", 8200 + (pk.hashCode() & 255));
+                    }
+                }
+            }
+            if (changed || !init) s.edit().putStringSet("apps", seen).putBoolean("_init", true).putLong("_ts", ts).apply();
+        } catch (Throwable ignored) { }
+    }
+
     static void clearAll() {
         TABLE.clear();
         synchronized (DNSLOG) { DNSLOG.clear(); }
         IPNAME.clear();
+        try { if (dir != null) new File(dir, "history.json").delete(); } catch (Throwable ignored) { }
         synchronized (LK) {
             closePcap();
             if (pf != null) pf.delete();
